@@ -1,4 +1,24 @@
 {
-  "updated_at": null,
-  "entries": []
+ "updated_at": "2026-11-01T18:20:13.345159+00:00",
+ "entries": [
+  {
+   "received_at": "2026-11-01T18:20:13.345127+00:00",
+   "event": "cycle_trading",
+   "report": {
+    "timestamp": "2026-10-30T19:55:08.072249+00:00",
+    "session_date": "2026-10-30",
+    "skipped": false,
+    "skip_reason": null,
+    "equity": 100000.0,
+    "signals": {
+     "AAPL": "HOLD",
+     "MSFT": "HOLD"
+    },
+    "decisions": [],
+    "orders": [],
+    "halts": [],
+    "errors": []
+   }
+  }
+ ]
 }
