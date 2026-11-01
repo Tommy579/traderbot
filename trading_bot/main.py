@@ -51,6 +51,7 @@ from trading_bot.data.loader import (
     momentum_zscores,
     trend_regime,
 )
+from trading_bot.data.news_sentiment import NewsAssessment, NewsSentimentAnalyzer
 from trading_bot.execution.alpaca_client import (
     AlpacaPaperClient,
     BrokerError,
@@ -225,6 +226,64 @@ def _build_stats_publisher(settings: Settings) -> GitHubStatsPublisher | None:
     except ValueError as exc:
         LOGGER.warning("publication des statistiques désactivée: %s", exc)
         return None
+
+
+def _build_news_analyzer(settings: Settings) -> NewsSentimentAnalyzer | None:
+    """Analyseur d'actualités configuré, ou ``None`` si le filtre est inactif.
+
+    Nuance importante par rapport à la publication des statistiques : une clé
+    OpenRouter absente ne désactive pas le module. Le filtre existe alors,
+    mais reste neutre — le bot continue de trader normalement. On ne retourne
+    ``None`` que si le filtre est explicitement coupé, ou si les identifiants
+    Alpaca manquent (sans eux, aucun article n'est lisible).
+
+    Args:
+        settings: Configuration effective.
+
+    Returns:
+        L'analyseur, ou ``None`` si le filtre ne doit pas tourner.
+    """
+    if not settings.news_filter_enabled:
+        return None
+
+    api_key = (
+        settings.alpaca_api_key.get_secret_value().strip()
+        if settings.alpaca_api_key is not None
+        else ""
+    )
+    secret = (
+        settings.alpaca_secret_key.get_secret_value().strip()
+        if settings.alpaca_secret_key is not None
+        else ""
+    )
+    if not api_key or not secret:
+        LOGGER.warning(
+            "filtre d'actualités demandé mais identifiants Alpaca absents : "
+            "filtre ignoré"
+        )
+        return None
+
+    openrouter = (
+        settings.openrouter_api_key.get_secret_value()
+        if settings.openrouter_api_key is not None
+        else None
+    )
+    if not (openrouter or "").strip():
+        LOGGER.warning(
+            "OPENROUTER_API_KEY absent : le filtre d'actualités reste neutre "
+            "(aucun achat ne sera refusé)"
+        )
+
+    return NewsSentimentAnalyzer(
+        state_dir=settings.state_dir,
+        alpaca_api_key=api_key,
+        alpaca_secret_key=secret,
+        openrouter_api_key=openrouter,
+        model=settings.openrouter_model,
+        lookback_hours=settings.news_lookback_hours,
+        max_articles=settings.news_max_articles,
+        timeout_seconds=settings.news_timeout_seconds,
+    )
 
 
 def _build_notifier(settings: Settings) -> Notifier | None:
@@ -494,6 +553,7 @@ class TradingBot:
         audit: AuditLog | None = None,
         history: HistoryStore | None = None,
         notifier: Notifier | None = None,
+        news_analyzer: NewsSentimentAnalyzer | None = None,
         clock: Callable[[], datetime] = _utc_now,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -505,6 +565,7 @@ class TradingBot:
         self._audit = audit or AuditLog(settings.state_dir / "audit.jsonl")
         self._history = history or HistoryStore(settings.state_dir / "history.jsonl")
         self._notifier = notifier
+        self._news = news_analyzer
         self._clock = clock
         self._sleep = sleep
         self._risk = RiskEngine(settings.risk)
@@ -633,6 +694,7 @@ class TradingBot:
 
         marks = self._resolve_marks(universe, bars_by_symbol, account, report)
         self._adopt_unprotected_positions(account, signals, marks, report, now=now)
+        assessments = self._news_assessments(universe, now=now, report=report)
 
         if halt is not None:
             self._flatten(account, marks, now, report)
@@ -647,7 +709,19 @@ class TradingBot:
             if position is None:
                 continue
             price = marks.get(symbol, position.current_price)
-            decision = self._risk.evaluate_stop_exit(position, price=price, now=now)
+            # La vigie passe avant le stop : sur un krach, le stop glisse et se
+            # remplit bien plus bas que son seuil. Une menace critique justifie
+            # de sortir au marché sans l'attendre.
+            decision = self._risk.evaluate_news_panic_exit(
+                position,
+                news=assessments.get(symbol),
+                price=price,
+                now=now,
+            )
+            if decision is not None:
+                self._logger.warning("sortie d'urgence %s: %s", symbol, decision.reason)
+            if decision is None:
+                decision = self._risk.evaluate_stop_exit(position, price=price, now=now)
             if decision is None:
                 exit_signal = signals.get(symbol)
                 if exit_signal is not None and exit_signal.action is SignalType.SELL:
@@ -710,6 +784,7 @@ class TradingBot:
                 account=account,
                 now=now,
                 session_date=session_date,
+                news=assessments.get(symbol),
             )
             report.decisions.append(decision)
             self._audit_decision(decision)
@@ -728,6 +803,33 @@ class TradingBot:
         report.equity = account.equity
         self._notify(report)
         return report
+
+    def _news_assessments(
+        self, universe: Sequence[str], *, now: datetime, report: CycleReport
+    ) -> dict[str, NewsAssessment]:
+        """Note les actualités de l'univers, sans jamais faire échouer le cycle.
+
+        L'analyseur est déjà *fail-safe* ; cette enveloppe couvre le reste
+        (disque plein, état corrompu, imprévu). Un filtre d'actualités
+        défaillant ne doit jamais empêcher la gestion des positions déjà
+        ouvertes — c'est-à-dire le seul geste réellement urgent.
+
+        Args:
+            universe: Symboles à noter.
+            now: Horodatage de référence du cycle.
+            report: Rapport du cycle, enrichi en cas d'incident.
+
+        Returns:
+            Un verdict par symbole, éventuellement vide.
+        """
+        if self._news is None:
+            return {}
+        try:
+            return self._news.assess(universe, now=now)
+        except Exception as exc:  # noqa: BLE001 - jamais bloquant par construction
+            report.errors.append(f"filtre d'actualités ignoré: {exc}")
+            self._logger.warning("filtre d'actualités ignoré: %s", exc)
+            return {}
 
     def _build_account(
         self,
@@ -1256,7 +1358,13 @@ def cmd_live(args: argparse.Namespace) -> int:
     except (ConfigurationError, BrokerError) as exc:
         logger.error("%s", exc)
         return 2
-    bot = TradingBot(settings, strategy, broker, notifier=_build_notifier(settings))
+    bot = TradingBot(
+        settings,
+        strategy,
+        broker,
+        notifier=_build_notifier(settings),
+        news_analyzer=_build_news_analyzer(settings),
+    )
     if args.once:
         report = bot.run_once()
         print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
@@ -1345,6 +1453,65 @@ def cmd_check(args: argparse.Namespace) -> int:
         stop = signal.price - atr * settings.risk.atr_stop_multiple
         print(f"  stop ATR proposé: {_format_number(stop)}")
     print("")
+    return 0
+
+
+def cmd_news(args: argparse.Namespace) -> int:
+    """Commande ``news`` : radar de sentiment sur les actualités récentes.
+
+    Affiche, pour chaque symbole, la note du modèle et l'effet qu'elle
+    produirait sur le moteur de risque. Utile pour comprendre *pourquoi* un
+    achat a été refusé, sans fouiller ``audit.jsonl``.
+    """
+    settings = _settings_from_args(args)
+    configure_logging(settings)
+    analyzer = _build_news_analyzer(settings)
+    if analyzer is None:
+        if not settings.news_filter_enabled:
+            print("Filtre d'actualités désactivé (NEWS_FILTER_ENABLED=false).")
+        else:
+            print("Identifiants Alpaca absents : actualités illisibles.")
+        return 2
+
+    symbols = list(settings.symbols)
+    veto = settings.risk.news_veto_threshold
+    panic = settings.risk.news_panic_exit_threshold
+    engine = RiskEngine(settings.risk)
+
+    print(
+        f"Radar d'actualités | fenêtre {settings.news_lookback_hours} h | "
+        f"modèle {settings.openrouter_model}"
+    )
+    print(f"seuils : veto d'entrée ≤ {veto:+.2f} | sortie d'urgence ≤ {panic:+.2f}\n")
+
+    assessments = analyzer.assess(symbols, now=datetime.now(UTC))
+
+    header = (
+        f"{'Symbole':<9}{'Score':>8}{'Conf.':>8}{'Critique':>9}"
+        f"{'Art.':>5}  {'Effet':<15}Motif"
+    )
+    print(header)
+    print("-" * 78)
+    for symbol in symbols:
+        assessment = assessments.get(symbol)
+        if assessment is None:
+            print(f"{symbol:<9}{'—':>8}")
+            continue
+        if assessment.is_critical_threat and assessment.sentiment_score <= panic:
+            effect = "SORTIE URGENCE"
+        elif engine.news_vetoes_entry(assessment):
+            effect = "VETO ENTRÉE"
+        else:
+            effect = "—"
+        rationale = " ".join(assessment.rationale.split())
+        print(
+            f"{symbol:<9}{assessment.sentiment_score:>+8.2f}"
+            f"{assessment.confidence:>8.2f}"
+            f"{'oui' if assessment.is_critical_threat else 'non':>9}"
+            f"{assessment.articles_count:>5}  {effect:<15}{rationale[:44]}"
+        )
+    if not analyzer.llm_enabled:
+        print("\n(Attention : aucune clé OpenRouter, les scores sont neutres.)")
     return 0
 
 
@@ -1561,6 +1728,17 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--symbols", help="univers CSV")
     web.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     web.set_defaults(func=cmd_web)
+
+    news = subparsers.add_parser(
+        "news",
+        help="radar de sentiment des actualités récentes",
+    )
+    news.add_argument(
+        "--symbols",
+        help="tickers à noter, séparés par des virgules (défaut : l'univers)",
+    )
+    news.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    news.set_defaults(func=cmd_news)
 
     publish = subparsers.add_parser(
         "publish-stats",

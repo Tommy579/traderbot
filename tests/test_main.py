@@ -15,6 +15,7 @@ import pytest
 
 import trading_bot.main as trading_main
 from trading_bot.config import ConfigurationError, Settings
+from trading_bot.data.news_sentiment import NewsAssessment
 from trading_bot.execution.alpaca_client import (
     AccountSnapshot,
     BrokerError,
@@ -154,6 +155,24 @@ class FakeBars:
         if isinstance(self.bars, dict):
             return self.bars[symbol]
         return self.bars
+
+
+class FakeNewsAnalyzer:
+    """Analyseur d'actualités simulé, injecté dans le bot."""
+
+    def __init__(self, assessments: dict[str, NewsAssessment]) -> None:
+        self.assessments = assessments
+        self.calls: list[list[str]] = []
+
+    def assess(
+        self, symbols, *, now=None
+    ) -> dict[str, NewsAssessment]:
+        self.calls.append(list(symbols))
+        return {
+            symbol: self.assessments[symbol]
+            for symbol in symbols
+            if symbol in self.assessments
+        }
 
 
 @pytest.fixture
@@ -624,6 +643,93 @@ def test_publish_stats_reports_missing_configuration(settings, monkeypatch) -> N
     monkeypatch.setattr(trading_main, "_settings_from_args", lambda _args: settings)
     monkeypatch.setattr(trading_main, "_build_stats_publisher", lambda _settings: None)
     assert trading_main.cmd_publish_stats(argparse.Namespace()) == 2
+
+
+def test_cycle_refuses_a_buy_when_news_is_bad(settings, bot_bars) -> None:
+    """Bout en bout : un veto d'actualités traverse tout le cycle.
+
+    Le contrôle porte aussi sur ``audit.jsonl`` : un refus qui n'y figure pas
+    est un refus invisible, donc indéfendable quand on relit l'historique.
+    """
+    broker = FakeBroker()
+    news = FakeNewsAnalyzer(
+        {
+            "AAPL": NewsAssessment(
+                symbol="AAPL",
+                sentiment_score=-0.80,
+                confidence=0.9,
+                is_critical_threat=False,
+                rationale="avertissement sur les résultats",
+                articles_count=3,
+                updated_at=NOW,
+            )
+        }
+    )
+    bot = TradingBot(
+        settings,
+        AlwaysBuyStrategy(),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bot_bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+        news_analyzer=news,  # type: ignore[arg-type]
+    )
+    report = bot.run_once()
+
+    assert news.calls, "le filtre d'actualités doit avoir été consulté"
+    assert broker.orders == [], "aucun ordre ne doit être transmis"
+    assert [decision.code.value for decision in report.decisions] == ["NEWS_VETO"]
+    audit = (settings.state_dir / "audit.jsonl").read_text(encoding="utf-8")
+    assert "NEWS_VETO" in audit
+
+
+def test_cycle_liquidates_a_position_on_critical_news(settings, bot_bars) -> None:
+    """Un krach signalé par les actualités sort la position sans attendre le stop."""
+    position = Position(
+        symbol="AAPL",
+        qty=10.0,
+        avg_entry_price=100.0,
+        current_price=100.0,
+        stop_price=80.0,
+        initial_stop_price=80.0,
+    )
+    broker = FakeBroker(positions={"AAPL": position}, prices={"AAPL": 100.0})
+    news = FakeNewsAnalyzer(
+        {
+            "AAPL": NewsAssessment(
+                symbol="AAPL",
+                sentiment_score=-0.95,
+                confidence=0.95,
+                is_critical_threat=True,
+                rationale="fraude comptable révélée",
+                articles_count=5,
+                updated_at=NOW,
+            )
+        }
+    )
+    bot = TradingBot(
+        settings,
+        AlwaysBuyStrategy(),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bot_bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+        news_analyzer=news,  # type: ignore[arg-type]
+    )
+    report = bot.run_once()
+
+    assert "news_panic_exit" in [decision.reason for decision in report.decisions]
+    # ``FakeBroker.orders`` est typé ``list[object]`` : on lit le sens sans
+    # présumer la classe, comme le fait déjà le reste du fichier.
+    sides = [getattr(order, "side", None) for order in broker.orders]
+    assert Side.SELL in sides
+
+
+def test_cycle_ignores_the_filter_when_it_is_absent(settings, bot_bars) -> None:
+    """Sans analyseur fourni, le cycle se comporte exactement comme avant."""
+    broker = FakeBroker()
+    bot = make_bot(settings, bot_bars, broker)
+    report = bot.run_once()
+    assert not report.skipped
+    assert [decision.code.value for decision in report.decisions] == ["APPROVED"]
 
 
 def test_cycle_sends_webhook_report(settings, bot_bars) -> None:

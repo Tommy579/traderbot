@@ -53,6 +53,7 @@ from trading_bot.history import HistoryStore
 from trading_bot.main import (
     StateStore,
     TradingBot,
+    _build_news_analyzer,
     _build_notifier,
     _inject_benchmark,
     _symbol_message,
@@ -433,7 +434,11 @@ def _run_cycle(
     strategy = build_strategy(strategy_name)
     broker = broker_factory(effective)
     bot = TradingBot(
-        effective, strategy, broker, notifier=_build_notifier(effective)
+        effective,
+        strategy,
+        broker,
+        notifier=_build_notifier(effective),
+        news_analyzer=_build_news_analyzer(effective),
     )
     report = bot.run_once(source="gui")
     payload = report.to_dict()

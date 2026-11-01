@@ -28,7 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import StrEnum
-from typing import Final
+from typing import Final, Protocol
 
 from trading_bot.config import RiskConfig
 
@@ -75,6 +75,28 @@ class RejectionCode(StrEnum):
     INSUFFICIENT_BUYING_POWER = "INSUFFICIENT_BUYING_POWER"
     BELOW_MIN_NOTIONAL = "BELOW_MIN_NOTIONAL"
     INVALID_STOP = "INVALID_STOP"
+    NEWS_VETO = "NEWS_VETO"
+
+
+class NewsSignal(Protocol):
+    """Vue minimale d'une note d'actualités attendue par le moteur.
+
+    Le moteur de risque n'importe pas le module d'analyse : il ne connaît
+    qu'un score et un booléen. Cela le garde sans dépendance réseau — donc
+    testable hors ligne et reproductible en backtest — sans créer de cycle
+    d'imports entre ``risk`` et ``data``.
+
+    Les membres sont déclarés en lecture seule : une note d'actualités est un
+    instantané immuable (:class:`~trading_bot.data.news_sentiment.NewsAssessment`
+    est une dataclass gelée), et un attribut muable ne serait pas satisfait
+    par un champ gelé.
+    """
+
+    @property
+    def sentiment_score(self) -> float: ...
+
+    @property
+    def is_critical_threat(self) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -514,6 +536,7 @@ class RiskEngine:
         account: AccountState,
         now: datetime,
         session_date: date,
+        news: NewsSignal | None = None,
     ) -> RiskDecision:
         """Valide et dimensionne une entrée longue.
 
@@ -524,6 +547,11 @@ class RiskEngine:
         * ``capital_engagé_max / price`` — plafonds de position, d'exposition
           brute et de liquidités disponibles.
 
+        Une note d'actualités franchement négative (``news``) bloque l'entrée
+        avec le code :attr:`RejectionCode.NEWS_VETO`. Le paramètre est
+        optionnel : appelé sans lui, le moteur se comporte exactement comme
+        avant, ce qui garantit la reproductibilité du backtest.
+
         Args:
             symbol: Ticker à acheter.
             price: Prix de référence de la décision (dernier prix connu).
@@ -531,6 +559,7 @@ class RiskEngine:
             account: État du compte (équity, cash, positions).
             now: Horodatage de la décision (timezone-aware).
             session_date: Date de séance pour les compteurs journaliers.
+            news: Note d'actualités du symbole, si le filtre est actif.
 
         Returns:
             Décision approuvée portant un :class:`OrderIntent`, ou refus motivé.
@@ -564,6 +593,22 @@ class RiskEngine:
                 account.halt_reason or "circuit breaker actif",
                 now,
                 base_metrics,
+            )
+        if news is not None and self.news_vetoes_entry(news):
+            threat = " (menace critique signalée)" if news.is_critical_threat else ""
+            return self._reject(
+                RejectionCode.NEWS_VETO,
+                (
+                    f"actualité défavorable sur {symbol} : score "
+                    f"{news.sentiment_score:+.2f} ≤ seuil "
+                    f"{self._config.news_veto_threshold:+.2f}{threat}"
+                ),
+                now,
+                {
+                    **base_metrics,
+                    "news_score": float(news.sentiment_score),
+                    "news_critical": float(news.is_critical_threat),
+                },
             )
         existing = account.positions.get(symbol)
         if existing is not None and existing.qty > 0:
@@ -745,6 +790,67 @@ class RiskEngine:
             price=price,
             now=now,
             reason=label,
+        )
+
+    def news_vetoes_entry(self, news: NewsSignal) -> bool:
+        """Indique si la note d'actualités interdit une nouvelle entrée.
+
+        Le drapeau ``is_critical_threat`` suffit à lui seul : une fraude ou
+        une menace existentielle ne se moyenne pas, contrairement à une
+        tonalité simplement maussade.
+
+        Args:
+            news: Note d'actualités du symbole visé.
+
+        Returns:
+            ``True`` si l'entrée doit être refusée.
+        """
+        if news.is_critical_threat:
+            return True
+        return news.sentiment_score <= self._config.news_veto_threshold
+
+    def evaluate_news_panic_exit(
+        self,
+        position: Position,
+        *,
+        news: NewsSignal | None,
+        price: float,
+        now: datetime,
+    ) -> RiskDecision | None:
+        """Liquide une position sur menace critique, sans attendre le stop.
+
+        Un score effondré accompagné d'une menace critique justifie de sortir
+        au marché plutôt que d'attendre le stop ATR : sur un krach, le stop
+        glisse et se remplit bien plus bas que son seuil. La sortie emprunte
+        le chemin normal (:meth:`evaluate_exit`), et reste donc autorisée
+        même circuit breaker déclenché — c'est précisément le mécanisme de
+        mise à plat du portefeuille.
+
+        Args:
+            position: Position ouverte à examiner.
+            news: Note d'actualités, ou ``None`` si le filtre est inactif.
+            price: Dernier prix connu du symbole.
+            now: Horodatage de la décision.
+
+        Returns:
+            Une décision de sortie motivée ``news_panic_exit``, ou ``None``
+            si la menace ne justifie pas une liquidation immédiate. Un prix
+            inexploitable retourne ``None`` plutôt que de lever : ce moteur
+            est pur, il n'a pas à faire échouer un cycle.
+        """
+        if news is None or position.qty <= 0:
+            return None
+        if not news.is_critical_threat:
+            return None
+        if news.sentiment_score > self._config.news_panic_exit_threshold:
+            return None
+        if not math.isfinite(price) or price <= 0:
+            return None
+        return self.evaluate_exit(
+            position=position,
+            price=price,
+            now=now,
+            reason="news_panic_exit",
         )
 
     def evaluate_stop_replace(

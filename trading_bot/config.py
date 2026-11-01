@@ -145,10 +145,33 @@ class RiskConfig(BaseModel):
         le=300,
         description="Durée de validité du jeton d'approbation d'un ordre.",
     )
+    news_veto_threshold: float = Field(
+        -0.60,
+        ge=-1.0,
+        le=0.0,
+        description=(
+            "Score de sentiment au plus bas duquel un achat est refusé "
+            "([NEWS_VETO]). 0.0 désactive de fait tout veto par score."
+        ),
+    )
+    news_panic_exit_threshold: float = Field(
+        -0.85,
+        ge=-1.0,
+        le=0.0,
+        description=(
+            "Score au plus bas duquel une menace critique liquide la position "
+            "en urgence (news_panic_exit)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_coherence(self) -> RiskConfig:
         """Vérifie les invariants croisés du profil de risque."""
+        if self.news_panic_exit_threshold > self.news_veto_threshold:
+            raise ValueError(
+                "news_panic_exit_threshold doit être inférieur ou égal à "
+                "news_veto_threshold (une panique doit être plus grave qu'un veto)"
+            )
         if self.max_position_pct > self.max_gross_exposure_pct:
             raise ValueError("max_position_pct ne peut pas dépasser max_gross_exposure_pct")
         if self.bull_max_position_pct > self.bull_gross_exposure_pct:
@@ -293,6 +316,41 @@ class Settings(BaseSettings):
     stats_github_path: str = "docs/data/stats.json"
     stats_github_branch: str = "main"
 
+    # --- Analyse de sentiment des actualités (Alpaca News + OpenRouter) ---
+    news_filter_enabled: bool = Field(
+        True,
+        description=(
+            "Active le filtre de sentiment à l'entrée. Désactivé, le bot trade "
+            "exactement comme avant, sans aucun appel réseau supplémentaire."
+        ),
+    )
+    openrouter_api_key: SecretStr | None = Field(
+        None,
+        description=(
+            "Clé OpenRouter servant à noter les actualités. Absente, le filtre "
+            "reste inerte : aucun achat n'est refusé."
+        ),
+    )
+    openrouter_model: str = Field(
+        "google/gemini-3.8-flash",
+        description="Modèle OpenRouter, retenu pour son coût et sa latence.",
+    )
+    news_lookback_hours: int = Field(
+        24, ge=1, le=168, description="Fenêtre d'actualités analysée, en heures."
+    )
+    news_max_articles: int = Field(
+        10,
+        ge=1,
+        le=50,
+        description=(
+            "Nombre maximal d'articles transmis au LLM par symbole et par appel : "
+            "c'est le principal levier de coût après le cache d'articles."
+        ),
+    )
+    news_timeout_seconds: float = Field(
+        5.0, ge=1.0, le=30.0, description="Délai maximal d'un appel OpenRouter."
+    )
+
     risk: RiskConfig = Field(default_factory=RiskConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
 
@@ -310,6 +368,8 @@ class Settings(BaseSettings):
     max_drawdown_pct: float | None = None
     min_order_notional: float | None = None
     fractional_shares: bool | None = None
+    news_veto_threshold: float | None = None
+    news_panic_exit_threshold: float | None = None
 
     @field_validator("symbols", mode="before")
     @classmethod
@@ -397,6 +457,8 @@ class Settings(BaseSettings):
             "max_drawdown_pct",
             "min_order_notional",
             "fractional_shares",
+            "news_veto_threshold",
+            "news_panic_exit_threshold",
         )
         overrides = {
             name: getattr(self, name)
