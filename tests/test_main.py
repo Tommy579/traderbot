@@ -22,7 +22,13 @@ from trading_bot.execution.alpaca_client import (
     OrderReceipt,
 )
 from trading_bot.history import HistoryStore
-from trading_bot.main import PersistedState, StateStore, TradingBot, _inject_benchmark
+from trading_bot.main import (
+    PersistedState,
+    StateStore,
+    TradingBot,
+    _inject_benchmark,
+    market_closed_message,
+)
 from trading_bot.risk.engine import Position, Side
 from trading_bot.strategies.base import SignalType, Strategy
 from trading_bot.strategies.relative_momentum import RelativeMomentumStrategy
@@ -266,6 +272,27 @@ def test_market_closed_skips_cycle(settings, bot_bars) -> None:
     assert report.skipped
     assert report.skip_reason == "marché fermé (week-end)"
     assert broker.orders == []
+
+
+def test_market_closed_message_names_reason_and_reopen(settings) -> None:
+    """Le message nomme la cause réelle et le prochain instant d'ouverture."""
+    status = MarketStatus(
+        is_open=False,
+        closure=MarketClosure.WEEKEND,
+        next_open=datetime(2026, 11, 2, 14, 30, tzinfo=UTC),
+    )
+    assert market_closed_message(status, settings.market_timezone) == (
+        "marché fermé (week-end) — réouverture lundi 02/11 à 09:30 (EST)"
+    )
+
+
+def test_market_closed_message_without_reopen(settings) -> None:
+    """Sans horaire d'ouverture connu, le message reste sobre et honnête."""
+    status = MarketStatus(is_open=False, closure=MarketClosure.HOLIDAY)
+    assert (
+        market_closed_message(status, settings.market_timezone)
+        == "marché fermé (jour férié)"
+    )
 
 
 def test_daily_circuit_breaker_liquidates(settings, bot_bars) -> None:

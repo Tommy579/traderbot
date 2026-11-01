@@ -18,7 +18,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Final, Protocol, cast
 from zoneinfo import ZoneInfo
 
@@ -63,7 +63,7 @@ class OrderRejectedError(BrokerError):
     """Le courtier a rejeté, annulé ou expiré l'ordre."""
 
 
-class MarketClosure(str, Enum):
+class MarketClosure(StrEnum):
     """Cause d'une fermeture de marché constatée auprès d'Alpaca."""
 
     WEEKEND = "week-end"

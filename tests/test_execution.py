@@ -15,6 +15,8 @@ from trading_bot.config import Settings
 from trading_bot.execution.alpaca_client import (
     AlpacaPaperClient,
     BrokerError,
+    MarketClosure,
+    MarketStatus,
     OrderRejectedError,
     OrderTimeoutError,
     PaperTradingViolation,
@@ -33,6 +35,9 @@ class FakeTradingClient:
         self.cancelled = 0
         self.closed = 0
         self._by_id: dict[str, object] = {}
+        self.clock: object = SimpleNamespace(is_open=True)
+        self.calendar: list[object] = []
+        self.calendar_error: Exception | None = None
 
     def get_account(self) -> object:
         return SimpleNamespace(
@@ -50,7 +55,12 @@ class FakeTradingClient:
         ]
 
     def get_clock(self) -> object:
-        return SimpleNamespace(is_open=True)
+        return self.clock
+
+    def get_calendar(self, filters: object = None) -> list[object]:
+        if self.calendar_error is not None:
+            raise self.calendar_error
+        return self.calendar
 
     def submit_order(self, order_data: object) -> object:
         self.orders.append(order_data)
@@ -238,6 +248,78 @@ def test_market_clock_and_emergency_methods(
     client.close_all_positions()
     assert fake_trading.cancelled == 1
     assert fake_trading.closed == 1
+
+
+def test_market_status_open(client: AlpacaPaperClient) -> None:
+    """Une horloge ouverte : marché ouvert, aucun motif de fermeture."""
+    assert client.market_status() == MarketStatus(is_open=True)
+
+
+def test_market_status_weekend(
+    client: AlpacaPaperClient, fake_trading: FakeTradingClient
+) -> None:
+    """Dimanche 1er nov. 2026 : hors horaires ET hors semaine → week-end.
+
+    C'est le cas qui trompait l'utilisateur : 17 h à Paris = 11 h à New York,
+    dans les heures de séance, mais l'horloge Alpaca est fermée.
+    """
+    next_open = datetime(2026, 11, 2, 14, 30, tzinfo=UTC)
+    fake_trading.clock = SimpleNamespace(
+        is_open=False,
+        timestamp=datetime(2026, 11, 1, 16, 0, tzinfo=UTC),
+        next_open=next_open,
+    )
+    fake_trading.calendar = []
+    status = client.market_status()
+    assert status.is_open is False
+    assert status.closure is MarketClosure.WEEKEND
+    assert status.next_open == next_open
+
+
+def test_market_status_holiday(
+    client: AlpacaPaperClient, fake_trading: FakeTradingClient
+) -> None:
+    """Un jour de semaine sans séance au calendrier : jour férié."""
+    fake_trading.clock = SimpleNamespace(
+        is_open=False, timestamp=datetime(2026, 12, 25, 15, 0, tzinfo=UTC)
+    )
+    fake_trading.calendar = []
+    assert client.market_status().closure is MarketClosure.HOLIDAY
+
+
+def test_market_status_outside_hours(
+    client: AlpacaPaperClient, fake_trading: FakeTradingClient
+) -> None:
+    """Une séance existe ce jour-là mais l'horloge est fermée : hors séance."""
+    fake_trading.clock = SimpleNamespace(
+        is_open=False, timestamp=datetime(2024, 1, 10, 22, 0, tzinfo=UTC)
+    )
+    fake_trading.calendar = [SimpleNamespace(date=date(2024, 1, 10))]
+    assert client.market_status().closure is MarketClosure.OUTSIDE_HOURS
+
+
+def test_market_status_calendar_failure_degrades(
+    client: AlpacaPaperClient, fake_trading: FakeTradingClient
+) -> None:
+    """Calendrier illisible : on retombe sur la seule information locale."""
+    fake_trading.clock = SimpleNamespace(
+        is_open=False, timestamp=datetime(2026, 11, 1, 16, 0, tzinfo=UTC)
+    )
+    fake_trading.calendar_error = RuntimeError("calendrier indisponible")
+    assert client.market_status().closure is MarketClosure.WEEKEND
+
+
+def test_market_status_clock_failure(
+    client: AlpacaPaperClient, fake_trading: FakeTradingClient
+) -> None:
+    """Horloge illisible : erreur de courtier explicite, jamais silencieuse."""
+
+    def boom() -> object:
+        raise RuntimeError("horloge indisponible")
+
+    fake_trading.get_clock = boom  # type: ignore[method-assign]
+    with pytest.raises(BrokerError):
+        client.market_status()
 
 
 def test_data_feed_uses_settings(settings: Settings) -> None:
