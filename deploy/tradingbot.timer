@@ -1,0 +1,17 @@
+# Timer systemd UTILISATEUR : un cycle par jour de marché, à 15:55 heure de
+# New York (5 minutes avant la clôture), fuseau géré par systemd même pendant
+# les changements d'heure. Les jours fériés sont filtrés par le bot lui-même
+# (cycle ignoré si le marché est fermé).
+
+[Unit]
+Description=TradingBot Alpaca - declenchement quotidien avant la cloture US
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15:55:00 America/New_York
+# Un raté ne se rejoue pas : une exécution au démarrage tomberait en pleine
+# seance sur des signaux de la veille, ce qui n'est pas le comportement voulu.
+Persistent=false
+Unit=tradingbot.service
+
+[Install]
+WantedBy=timers.target

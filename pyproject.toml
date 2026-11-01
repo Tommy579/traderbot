@@ -1,0 +1,57 @@
+[project]
+name = "trading-bot-paper"
+version = "1.0.0"
+description = "Bot de trading systématique haute fiabilité, restreint au paper trading Alpaca"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Lead Quant Developer" }]
+dependencies = [
+    "alpaca-py>=0.33,<1",
+    "numpy>=1.26,<3",
+    "pandas>=2.2,<3",
+    "pandas-ta-classic>=0.3.55",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6,<3",
+    "yfinance>=0.2.50,<1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-cov>=6,<8",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[tool.uv]
+package = false
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+disallow_untyped_decorators = false
+exclude = ["tests/"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "network: tests nécessitant un accès réseau (désactivés par défaut)",
+]
+
+[tool.ruff]
+line-length = 92
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "BLE"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]

@@ -1,0 +1,964 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TradingBot — tableau de bord</title>
+<style>
+  :root {
+    --surface-1: #fcfcfb;
+    --plane: #f9f9f7;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --series-1: #2a78d6;
+    --good: #0ca30c;
+    --bad: #d03b3b;
+    --card-border: #e6e5e0;
+    --btn: #0b0b0b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --surface-1: #1a1a19;
+      --plane: #0d0d0d;
+      --ink: #f0efec;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --series-1: #3987e5;
+      --good: #0ca30c;
+      --bad: #d03b3b;
+      --card-border: #383835;
+      --btn: #f0efec;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--ink);
+    font: 15px/1.5 system-ui, sans-serif;
+  }
+  header {
+    background: var(--surface-1);
+    border-bottom: 1px solid var(--card-border);
+    padding: 14px 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header .sub { color: var(--ink-2); font-size: 13px; }
+  nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  nav button {
+    border: 1px solid var(--card-border);
+    background: var(--surface-1);
+    color: var(--ink);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  nav button.active { background: var(--btn); color: var(--plane); border-color: var(--btn); }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 80px; }
+  section { display: none; }
+  section.active { display: block; }
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+  .card h2 { margin: 0 0 6px; font-size: 17px; }
+  .card p.hint { color: var(--ink-2); margin: 0 0 12px; font-size: 14px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+  .tile {
+    background: var(--plane);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .tile .label { color: var(--ink-2); font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .tile .value { font-size: 22px; font-weight: 650; margin-top: 2px; }
+  .tile .value small { font-size: 13px; color: var(--ink-2); font-weight: 400; }
+  .pos { color: var(--good); }
+  .neg { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; color: var(--ink-2); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--card-border); }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--card-border); }
+  tr:last-child td { border-bottom: none; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 12.5px; font-weight: 650;
+  }
+  .badge.buy { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); }
+  .badge.sell { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+  .badge.hold { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--ink-2); }
+  .badge.ok { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); }
+  .badge.warn { background: color-mix(in srgb, var(--series-1) 14%, transparent); color: var(--series-1); }
+  .banner {
+    border-radius: 10px; padding: 12px 14px; margin-bottom: 16px;
+    border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
+    background: color-mix(in srgb, var(--bad) 8%, var(--surface-1));
+  }
+  .banner b { color: var(--bad); }
+  label { display: block; font-size: 13.5px; color: var(--ink-2); margin: 10px 0 4px; }
+  input, select, textarea {
+    width: 100%; padding: 9px 10px; border-radius: 8px; font-size: 14.5px;
+    border: 1px solid var(--card-border); background: var(--plane); color: var(--ink);
+  }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 160px; }
+  button.primary, button.secondary {
+    border-radius: 9px; padding: 11px 18px; font-size: 14.5px; cursor: pointer;
+    border: 1px solid var(--btn); font-weight: 600;
+  }
+  button.primary { background: var(--btn); color: var(--plane); }
+  button.secondary { background: transparent; color: var(--ink); }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  .actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  .msg { margin-top: 12px; padding: 10px 12px; border-radius: 8px; font-size: 14px; display: none; }
+  .msg.err { display: block; background: color-mix(in srgb, var(--bad) 9%, var(--surface-1)); color: var(--bad); }
+  .msg.ok { display: block; background: color-mix(in srgb, var(--good) 9%, var(--surface-1)); color: var(--good); }
+  .msg.info { display: block; background: color-mix(in srgb, var(--series-1) 9%, var(--surface-1)); color: var(--series-1); }
+  .strategy-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+  .strategy-card {
+    border: 1.5px solid var(--card-border); border-radius: 10px; padding: 12px;
+    cursor: pointer; background: var(--plane);
+  }
+  .strategy-card.selected { border-color: var(--series-1); background: color-mix(in srgb, var(--series-1) 6%, var(--plane)); }
+  .strategy-card b { display: block; margin-bottom: 4px; }
+  .strategy-card span { color: var(--ink-2); font-size: 13px; }
+  .chart-wrap { position: relative; margin-top: 8px; }
+  .chart-tip {
+    position: absolute; pointer-events: none; background: var(--surface-1);
+    border: 1px solid var(--card-border); border-radius: 8px; padding: 8px 10px;
+    font-size: 13px; display: none; box-shadow: 0 4px 14px rgba(0,0,0,0.14); white-space: nowrap;
+  }
+  .chart-tip b { font-size: 14px; }
+  details { border: 1px solid var(--card-border); border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; background: var(--plane); }
+  details summary { cursor: pointer; font-weight: 600; font-size: 14.5px; }
+  details p { color: var(--ink-2); margin: 8px 0 2px; font-size: 14px; }
+  .small { font-size: 13px; color: var(--ink-2); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 8px; }
+  .skel { color: var(--muted); font-size: 14px; }
+
+  .card {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  .card:hover {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  }
+  button {
+    transition: all 0.1s ease;
+  }
+  button:active {
+    transform: scale(0.97);
+  }
+  .toast-container {
+    position: fixed; bottom: 20px; right: 20px; z-index: 100;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .toast {
+    padding: 12px 18px; border-radius: 10px; font-size: 14px;
+    color: var(--ink); background: var(--surface-1);
+    border: 1px solid var(--card-border); box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    animation: toast-in 0.3s ease forwards; min-width: 250px;
+    max-width: 350px; line-height: 1.4;
+  }
+  .toast.ok { border-left: 4px solid var(--good); }
+  .toast.err { border-left: 4px solid var(--bad); }
+  .toast.info { border-left: 4px solid var(--series-1); }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+</style>
+</head>
+<body>
+<div class="toast-container" id="toast-container"></div>
+<header>
+  <div>
+    <h1>Robot de trading (entraînement)</h1>
+    <div class="sub">Argent fictif sur Alpaca Paper — aucune vraie somme ne peut être engagée.</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <button id="btn-refresh" class="secondary" style="padding:7px 12px;font-size:13px;border-radius:8px">Actualiser</button>
+    <nav>
+      <button data-tab="dashboard" class="active">Tableau de bord</button>
+      <button data-tab="history">Historique</button>
+      <button data-tab="backtest">Tester sur le passé</button>
+      <button data-tab="pilot">Piloter</button>
+      <button data-tab="settings">Réglages</button>
+      <button data-tab="learn">Comprendre</button>
+    </nav>
+  </div>
+</header>
+<main>
+
+  <!-- ====================== TABLEAU DE BORD ====================== -->
+  <section id="dashboard" class="active">
+    <div id="halt-banner"></div>
+    <div class="msg" id="dashboard-msg"></div>
+    <div class="card">
+      <h2>Votre compte d'entraînement</h2>
+      <p class="hint">Le marché est <b id="market-state">…</b>. Valeurs en dollars fictifs.</p>
+      <div class="tiles">
+        <div class="tile"><div class="label">Valeur totale</div><div class="value" id="t-equity">…</div></div>
+        <div class="tile"><div class="label">Cash disponible</div><div class="value" id="t-cash">…</div></div>
+        <div class="tile"><div class="label">Actions détenues</div><div class="value" id="t-count">…</div></div>
+        <div class="tile"><div class="label">Gains / pertes latents</div><div class="value" id="t-pnl">…</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Positions détenues</h2>
+      <p class="hint">Une « position » = des actions que le robot garde en ce moment, chacune protégée par un filet de sécurité (stop) qui limite la perte si le prix chute.</p>
+      <div id="positions"></div>
+    </div>
+    <div class="card">
+      <h2>Pilotage automatique</h2>
+      <div id="automation-mini"></div>
+    </div>
+    <div class="card">
+      <h2>Diagnostic du jour</h2>
+      <p class="hint">Demande au robot ce qu'il ferait maintenant, sans rien acheter ni vendre.</p>
+      <div class="row" style="align-items:end">
+        <div>
+          <label>Stratégie (méthode de décision)</label>
+          <select id="check-strategy"></select>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" id="btn-check">Vérifier maintenant</button>
+      </div>
+      <div class="msg" id="check-msg"></div>
+      <div id="check-result"></div>
+    </div>
+  </section>
+
+  <!-- ====================== HISTORIQUE ====================== -->
+  <section id="history">
+    <div class="card">
+      <h2>Ce que le robot a fait, jour après jour</h2>
+      <p class="hint">Chaque séance de marché laisse une trace : décisions, ordres transmis, coupe-circuits. Le robot écrit cet historique tout seul (réveil automatique comme cycle lancé depuis cette page) — un seul enregistrement par séance, remplacé si vous relancez un cycle le même jour.</p>
+      <div class="actions">
+        <button class="secondary" id="btn-history-refresh">Rafraîchir l'historique</button>
+      </div>
+    </div>
+    <div id="history-list"></div>
+  </section>
+
+  <!-- ====================== BACKTEST ====================== -->
+  <section id="backtest">
+    <div class="card">
+      <h2>Rejouer le passé pour juger une méthode</h2>
+      <p class="hint">On simule ce que la stratégie aurait fait sur les années passées, frais compris. Le passé ne garantit jamais le futur — c'est un indicateur, pas une promesse.</p>
+      <label>Méthode à tester</label>
+      <div class="strategy-cards" id="bt-strategies"></div>
+      <div class="row" style="margin-top:6px">
+        <div>
+          <label>Symboles (actions à tester, séparées par des virgules)</label>
+          <input id="bt-symbols" placeholder="AAPL, MSFT, NVDA, GOOGL, AMZN, META">
+        </div>
+        <div>
+          <label>Date de début</label>
+          <input id="bt-start" type="date" value="2023-01-01">
+        </div>
+      </div>
+      <div class="actions">
+        <button class="primary" id="btn-backtest">Lancer le test (≈ 30 s)</button>
+      </div>
+      <div class="msg" id="bt-msg"></div>
+    </div>
+    <div id="bt-result"></div>
+  </section>
+
+  <!-- ====================== PILOTER ====================== -->
+  <section id="pilot">
+    <div class="card">
+      <h2>Laisser le robot travailler tout seul</h2>
+      <p class="hint">Une fois activé, il se réveille tout seul chaque jour de marché à <b>15 h 55, heure de New York</b> — 5 minutes avant la clôture — analyse, décide, et vous prévient. Vous n'avez rien à faire.</p>
+      <div class="row" style="align-items:end">
+        <div>
+          <label>Stratégie utilisée chaque jour</label>
+          <select id="auto-strategy"></select>
+        </div>
+        <div style="flex:0">
+          <button class="primary" id="btn-automation">Activer / mettre à jour</button>
+        </div>
+      </div>
+      <div class="msg" id="automation-msg"></div>
+      <div id="automation-state"></div>
+    </div>
+    <div class="card">
+      <h2>Lancer un cycle maintenant</h2>
+      <p class="hint">Un cycle = une analyse complète + éventuellement des achats/ventes simulés. Hors séance (week-end, jour férié ou en dehors des heures d'ouverture), le robot refusera poliment.</p>
+      <div class="actions">
+        <button class="secondary" id="btn-cycle-dry">Répétition générale (aucun ordre)</button>
+        <button class="primary" id="btn-cycle-live">Vraie passe sur le compte fictif</button>
+      </div>
+      <div class="msg" id="cycle-msg"></div>
+      <div id="cycle-result"></div>
+    </div>
+  </section>
+
+  <!-- ====================== RÉGLAGES ====================== -->
+  <section id="settings">
+    <div class="card">
+      <h2>Actions suivies</h2>
+      <p class="hint">La liste des entreprises que le robot a le droit d'acheter (par ex. AAPL = Apple). 5 à 10 valeurs bien connues sont un bon point de départ.</p>
+      <input id="set-symbols" placeholder="AAPL, MSFT, NVDA">
+      <div id="settings-resolved"></div>
+      <div class="msg" id="settings-msg"></div>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <h2 style="margin:0">Recevoir un message après chaque cycle</h2>
+        <span id="webhook-badge" class="badge">Inactif</span>
+      </div>
+      <p class="hint" style="margin-top:6px">Le robot peut vous écrire sur Discord ou Telegram à la fin de chaque journée de trading.</p>
+      <label>Plateforme</label>
+      <select id="set-webhook-format">
+        <option value="discord">Discord</option>
+        <option value="telegram">Telegram</option>
+        <option value="generic">Autre (webhook JSON)</option>
+      </select>
+      <label>Adresse du webhook (URL fournie par Discord ou Telegram)</label>
+      <input id="set-webhook-url" placeholder="https://discord.com/api/webhooks/…">
+      <label>Identifiant de conversation — uniquement pour Telegram</label>
+      <input id="set-webhook-chat" placeholder="123456789">
+      <label>Jeton secret — indispensable pour un site de stats public</label>
+      <input id="set-webhook-token" type="password" placeholder="obligatoire si l'adresse n'est ni Discord ni Telegram">
+      <p class="hint" style="margin-top:4px">Sans ce jeton, une adresse publique connue permettrait à n'importe qui d'injecter de fausses statistiques. Laissez le champ vide pour <b>conserver</b> le jeton déjà enregistré : il n'est jamais réaffiché.</p>
+      <div class="actions">
+        <button class="primary" id="btn-settings">Enregistrer les réglages</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Sécurités du robot</h2>
+      <p class="hint">Ces garde-fous sont actifs en permanence et ne peuvent pas être désactivés depuis cette page :</p>
+      <ul class="small">
+        <li><b>Perte quotidienne ≥ <span id="s-daily">3</span> %</b> → tout est vendu, pause jusqu'au lendemain.</li>
+        <li><b>Chute totale ≥ <span id="s-dd">15</span> % depuis le plus haut</b> → arrêt complet : vous devez relancer vous-même.</li>
+        <li>Chaque achat part avec un <b>stop</b> : si l'action chute trop, elle est vendue automatiquement.</li>
+        <li>Le robot ne peut dépenser qu'une petite part du compte par achat.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ====================== COMPRENDRE ====================== -->
+  <section id="learn">
+    <div class="card">
+      <h2>Les 30 secondes pour comprendre ce robot</h2>
+      <p class="hint">Vous donnez au robot une liste d'actions et une méthode. Chaque jour, il regarde les prix, applique la méthode, et achète ou vend sur un compte <b>d'entraînement</b> (argent fictif). Il ne peut jamais toucher de vraie money : l'adresse du service est verrouillée sur le mode entraînement d'Alpaca.</p>
+      <details><summary>« Paper trading » ?</summary><p>Un compte de simulation parfait : vrais prix du marché, faux argent. Idéal pour apprendre sans risque.</p></details>
+      <details><summary>Une stratégie, c'est quoi ?</summary><p>Une règle précise et froide. Ex : « j'achète quand le prix dépasse son plus haut des 20 derniers jours, et je vends quand il passe sous son plus bas des 10 derniers jours ». Le robot applique la règle sans humeur ni doute.</p></details>
+      <details><summary>Stop (ou stop-loss)</summary><p>Un filet de sécurité posé juste après chaque achat : « si le prix descend sous X, vends tout de suite ». Il limite la casse sur un mauvais coup. Ici il est placé directement chez le courtier : même si votre ordinateur s'éteint, il tient.</p></details>
+      <details><summary>ATR (en une phrase)</summary><p>La « taille normale » des variations quotidiennes d'une action. Sert à calibrer les stops : une action nerveuse a besoin d'un filet plus large qu'une action calme.</p></details>
+      <details><summary>Drawdown (pire chute)</summary><p>La plus grosse baisse du compte entre un sommet et le creux qui suit. -15 % signifie : pire moment, on a eu 15 % de moins qu'au meilleur moment. C'est LA mesure du risque de mauvaise humeur.</p></details>
+      <details><summary>Circuit breaker (coupe-circuit)</summary><p>Une sécurité qui arrête le robot automatiquement quand ça dérape trop (perte du jour ≥ 3 %, ou chute totale ≥ 15 %). Comme un disjoncteur électrique : énervant parfois, vital souvent.</p></details>
+      <details><summary>Momentum et benchmark</summary><p>Le momentum = la force de la tendance d'une action. Le benchmark (SPY = les 500 grandes entreprises US) sert de référence : on n'achète que ce qui monte PLUS fort que le marché.</p></details>
+      <details><summary>Frais et glissement</summary><p>Chaque achat/vente coûte un peu (commission ≈ 0,1 %) et le prix bouge entre la décision et l'exécution (slippage ≈ 0,05 %). Tous les tests de cette page les incluent : les résultats sont pessimistes, donc honnêtes.</p></details>
+    </div>
+  </section>
+
+</main>
+<script>
+"use strict";
+
+function toast(text, kind = 'info') {
+  const container = $('#toast-container');
+  const el = document.createElement('div');
+  el.className = 'toast ' + kind;
+  el.textContent = text;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    el.style.transform = 'translateX(20px)';
+    el.style.transition = 'all 0.3s ease';
+    setTimeout(() => el.remove(), 300);
+  }, 4000);
+}
+
+function setLoading(btnId, isLoading, text = null) {
+  const btn = $('#' + btnId);
+  if (!btn) return;
+  btn.disabled = isLoading;
+  if (text && isLoading) {
+    btn.dataset.oldText = btn.textContent;
+    btn.textContent = text;
+  } else if (btn.dataset.oldText) {
+    btn.textContent = btn.dataset.oldText;
+    delete btn.dataset.oldText;
+  }
+}
+
+const $ = (sel) => document.querySelector(sel);
+const STRATEGIES = {
+  donchian_breakout: {
+    name: "Cassure de tendance", code: "donchian_breakout",
+    desc: "Achète quand une action franchit son plus haut des 20 derniers jours, seulement si le marché va bien. Vends quand elle casse son plus bas des 10 derniers jours. La méthode des traders « Tortue »."
+  },
+  relative_momentum: {
+    name: "Force relative", code: "relative_momentum",
+    desc: "N'achète que les actions qui montent plus fort que le marché (comparé à SPY), et les lâche quand elles faiblissent."
+  },
+  ema_cross: {
+    name: "Croisement de moyennes", code: "ema_cross",
+    desc: "La méthode d'origine du robot : achète quand la tendance courte dépasse la tendance longue. Simple mais réagit tard."
+  }
+};
+function esc(v) {
+  if (v == null) return "";
+  return String(v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+const money = (v) => (v == null) ? "—" :
+  new Intl.NumberFormat("fr-FR", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(v);
+const money2 = (v) => (v == null) ? "—" :
+  new Intl.NumberFormat("fr-FR", { style: "currency", currency: "USD" }).format(v);
+const pct = (v) => (v == null) ? "—" : ((v > 0 ? "+" : "") + (v * 100).toFixed(2).replace(".", ",") + " %");
+const cls = (v) => v > 0 ? "pos" : v < 0 ? "neg" : "";
+const frDate = (iso) => {
+  if (!iso) return "—";
+  const parts = String(iso).split("T")[0].split("-");
+  if (parts.length === 3) {
+    const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" });
+  }
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso) : d.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" });
+};
+const frDateTime = (iso) => {
+  if (!iso) return "bientôt";
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso) : d.toLocaleString("fr-FR");
+};
+
+function msg(id, text, kind) {
+  if (kind === 'ok' || kind === 'err') {
+    toast(text, kind);
+  }
+  const el = $("#" + id);
+  if (!el) return;
+  el.className = "msg " + kind;
+  el.textContent = text;
+}
+async function api(path, body) {
+  try {
+    const res = await fetch(path, body === undefined ? {} : {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+    });
+    const data = await res.json().catch(() => ({ ok: false, error: "Réponse illisible du serveur." }));
+    if (!res.ok || data.ok === false) throw new Error(data.error || "Erreur serveur.");
+    return data;
+  } catch (e) {
+    toast(e.message, 'err');
+    throw e;
+  }
+}
+async function pollJob(jobId, onTick) {
+  for (;;) {
+    const snap = await api("/api/job/" + jobId);
+    if (snap.status === "failed") throw new Error(snap.error || "La tâche a échoué.");
+    if (snap.status === "done") return snap.result;
+    if (onTick) onTick();
+    await new Promise(r => setTimeout(r, 900));
+  }
+}
+
+/* ---------------- Onglets ---------------- */
+document.querySelectorAll("nav button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll("section").forEach(s => s.classList.remove("active"));
+    btn.classList.add("active");
+    $("#" + btn.dataset.tab).classList.add("active");
+    if (btn.dataset.tab === "history") loadHistory(true);
+  });
+});
+
+/* ---------------- Sélecteurs de stratégie ---------------- */
+for (const id of ["#check-strategy", "#auto-strategy"]) {
+  $(id).innerHTML = Object.values(STRATEGIES).map(s =>
+    `<option value="${s.code}">${esc(s.name)}</option>`).join("");
+  $(id).value = "donchian_breakout";
+}
+$("#bt-strategies").innerHTML = Object.values(STRATEGIES).map(s =>
+  `<div class="strategy-card" data-code="${s.code}"><b>${esc(s.name)}</b><span>${esc(s.desc)}</span></div>`).join("");
+let btStrategy = "donchian_breakout";
+document.querySelectorAll(".strategy-card").forEach(card => {
+  if (card.dataset.code === btStrategy) card.classList.add("selected");
+  card.addEventListener("click", () => {
+    document.querySelectorAll(".strategy-card").forEach(c => c.classList.remove("selected"));
+    card.classList.add("selected");
+    btStrategy = card.dataset.code;
+  });
+});
+
+/* ---------------- Tableau de bord ---------------- */
+function renderHalt(state) {
+  const el = $("#halt-banner");
+  el.innerHTML = "";
+  if (!state || !state.halted) return;
+  const permanent = state.halt_scope === "permanent";
+  el.innerHTML = `<div class="banner">
+    <b>Coupe-circuit déclenché — le robot s'est mis en sécurité.</b><br>
+    ${esc(state.halt_reason || "")}
+    ${permanent ? `<div class="actions"><button class="secondary" id="btn-halt-reset">
+      J'ai vérifié, relancer le robot</button></div>` :
+    `<div class="small" style="margin-top:6px">Pause automatique : il reprendra tout seul au prochain jour de marché.</div>`}
+  </div>`;
+  if (permanent) {
+    $("#btn-halt-reset").addEventListener("click", async () => {
+      const reason = prompt("En une phrase : qu'avez-vous vérifié avant de relancer ?");
+      if (!reason) return;
+      try {
+        const out = await api("/api/halt/reset", { confirm: true, reason });
+        msg("dashboard-msg", out.message, "ok");
+        refreshStatus();
+      } catch (e) { msg("dashboard-msg", e.message, "err"); }
+    });
+  }
+}
+function renderPositions(rows) {
+  const el = $("#positions");
+  if (!rows.length) { el.innerHTML = `<p class="skel">Aucune position pour l'instant. Le robot n'achète que lorsque sa méthode lui donne un signal d'achat.</p>`; return; }
+  el.innerHTML = `<div class="table-wrap"><table><thead><tr>
+    <th>Action</th><th class="num">Quantité</th><th class="num">Prix d'achat</th><th class="num">Prix actuel</th>
+    <th class="num">Gains / pertes</th><th class="num">Filet (stop)</th></tr></thead><tbody>
+    ${rows.map(p => `<tr><td><b>${esc(p.symbol)}</b></td>
+      <td class="num">${p.qty}</td><td class="num">${money2(p.entry_price)}</td><td class="num">${money2(p.current_price)}</td>
+      <td class="num ${cls(p.pnl)}">${money2(p.pnl)}<br><small>${pct(p.pnl_pct)}</small></td>
+      <td class="num">${p.stop_price ? money2(p.stop_price) : "—"}</td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+function renderAutomation(a) {
+  const nextText = a.next_run ? frDateTime(a.next_run) : "bientôt";
+  const stratText = STRATEGIES[a.strategy]?.name || a.strategy;
+  const content = a.timer_active
+    ? `<span class="badge ok">Actif</span> Prochain réveil : <b>${esc(nextText)}</b> — méthode : <b>${esc(stratText)}</b>`
+    : `<span class="badge warn">Inactif</span> Le robot ne se réveille pas tout seul. Ouvrez l'onglet « Piloter » pour l'activer.`;
+  $("#automation-mini").innerHTML = content;
+  $("#automation-state").innerHTML = content;
+}
+async function refreshStatus() {
+  try {
+    const s = await api("/api/status");
+    if (s.error) {
+      msg("dashboard-msg", s.error, "err");
+      $("#market-state").textContent = "indisponible (erreur de connexion)";
+    } else {
+      const dm = $("#dashboard-msg");
+      if (dm) dm.style.display = "none";
+      $("#market-state").textContent = s.market_open ? "OUVERT — le robot peut agir" : "fermé — le robot attend";
+    }
+    if (s.account) {
+      $("#t-equity").textContent = money(s.account.equity);
+      $("#t-cash").textContent = money(s.account.cash);
+      $("#t-count").textContent = s.positions.length;
+      const pnl = s.positions.reduce((acc, p) => acc + p.pnl, 0);
+      const t = $("#t-pnl");
+      t.textContent = (pnl > 0 ? "+" : "") + money(pnl);
+      t.className = "value " + cls(pnl);
+    }
+    renderHalt(s.state);
+    renderPositions(s.positions);
+    renderAutomation(s.automation);
+    if (s.automation && s.automation.strategy && STRATEGIES[s.automation.strategy]) {
+      $("#auto-strategy").value = s.automation.strategy;
+    }
+    if (s.settings) {
+      $("#set-symbols").value = s.settings.symbols.join(", ");
+      $("#bt-symbols").value = s.settings.symbols.join(", ");
+      $("#set-webhook-format").value = s.settings.webhook_format || "discord";
+      if (s.settings.webhook_chat_id) {
+        $("#set-webhook-chat").value = s.settings.webhook_chat_id;
+      }
+      const badge = $("#webhook-badge");
+      if (badge) {
+        if (s.settings.webhook_enabled) {
+          badge.className = "badge ok";
+          badge.textContent = "Actif";
+          $("#set-webhook-url").placeholder = "(enregistré — laissez vide pour désactiver)";
+        } else {
+          badge.className = "badge warn";
+          badge.textContent = "Inactif";
+          $("#set-webhook-url").placeholder = "https://discord.com/api/webhooks/…";
+        }
+      }
+      const tokenField = $("#set-webhook-token");
+      if (tokenField) {
+        tokenField.placeholder = s.settings.webhook_token_set
+          ? "jeton enregistré — laissez vide pour le conserver"
+          : "obligatoire si l'adresse n'est ni Discord ni Telegram";
+      }
+      $("#s-daily").textContent = Math.round(s.settings.daily_loss_limit_pct * 100);
+      $("#s-dd").textContent = Math.round(s.settings.drawdown_limit_pct * 100);
+    }
+  } catch (e) { msg("dashboard-msg", e.message, "err"); }
+}
+
+/* ---------------- Historique ---------------- */
+const HISTORY_SOURCE = {
+  timer: { label: "Réveil automatique", cls: "ok" },
+  gui:   { label: "Lancé depuis cette page", cls: "warn" },
+  cli:   { label: "Ligne de commande", cls: "hold" }
+};
+const SIGNAL_CLS = { BUY: "buy", SELL: "sell", HOLD: "hold" };
+const sideLabel = (s) => s === "buy" ? "achat" : s === "sell" ? "vente" : s;
+
+async function loadHistory(force) {
+  const el = $("#history-list");
+  if (!force && el.dataset.loaded === "1") return;
+  el.innerHTML = `<div class="card"><p class="skel">Chargement de l'historique…</p></div>`;
+  try {
+    const data = await api("/api/history");
+    renderHistory(data.entries || []);
+  } catch (e) {
+    el.innerHTML = `<div class="card"><p class="skel">${esc(e.message)}</p></div>`;
+  }
+}
+
+function renderHistory(entries) {
+  const el = $("#history-list");
+  el.dataset.loaded = "1";
+  if (!entries.length) {
+    el.innerHTML = `<div class="card"><p class="skel">Aucun cycle enregistré pour l'instant. L'historique se remplit au premier cycle : bouton « Vraie passe sur le compte fictif », ou réveil automatique du prochain jour de marché.</p></div>`;
+    return;
+  }
+  el.innerHTML = entries.map(entry => {
+    const src = HISTORY_SOURCE[entry.source] || { label: entry.source || "origine inconnue", cls: "hold" };
+    const badges = [`<span class="badge ${src.cls}">${esc(src.label)}</span>`];
+    if (entry.dry_run) badges.push(`<span class="badge hold">Répétition — aucun ordre</span>`);
+    if (entry.skipped) badges.push(`<span class="badge hold">Ignoré</span>`);
+
+    const signals = Object.entries(entry.signals || {});
+    const orders = entry.orders || [];
+    const approved = (entry.decisions || []).filter(d => d.approved);
+    const halts = entry.halts || [];
+    const errors = entry.errors || [];
+    const lines = [];
+
+    if (entry.skipped) {
+      lines.push(`<p class="hint">Le robot s'est réveillé mais n'a rien fait : ${esc(entry.skip_reason || "séance non ouverte")}.</p>`);
+    } else {
+      lines.push(`<p class="hint">Valeur du compte après le cycle : <b>${money2(entry.equity)}</b>.</p>`);
+      if (signals.length) {
+        lines.push(`<p class="small"><b>Signaux lus :</b> ${signals.map(([sym, act]) =>
+          `<span class="badge ${SIGNAL_CLS[act] || "hold"}">${esc(sym)} : ${esc(act)}</span>`).join(" ")}</p>`);
+      }
+      if (orders.length) {
+        lines.push(`<p class="small"><b>Ordres transmis :</b></p><ul class="small">${orders.map(o =>
+          `<li>${esc(sideLabel(o.side))} de ${esc(String(o.qty))} ${esc(o.symbol)} — statut : ${esc(o.status)}${o.avg_fill_price ? ` à ${money2(o.avg_fill_price)}` : ""}</li>`).join("")}</ul>`);
+      } else {
+        lines.push(`<p class="small">Aucun ordre transmis : la méthode n'a rien demandé ce jour-là.</p>`);
+      }
+      if (approved.length) {
+        lines.push(`<p class="small"><b>Décisions validées :</b></p><ul class="small">${approved.map(d =>
+          `<li>${esc(sideLabel(d.side))} de ${esc(String(d.qty))} ${esc(d.symbol)}${d.stop_price ? ` — filet à ${money2(d.stop_price)}` : ""} (${esc(d.reason)})</li>`).join("")}</ul>`);
+      }
+    }
+    if (halts.length) {
+      lines.push(`<div class="banner"><b>Coupe-circuit :</b><ul class="small" style="margin:6px 0 0">${halts.map(h =>
+        `<li>${esc(h.scope === "permanent" ? "arrêt complet" : "pause du jour")} — ${esc(h.reason)}</li>`).join("")}</ul></div>`);
+    }
+    if (errors.length) {
+      lines.push(`<p class="small" style="color:var(--bad)"><b>Alertes :</b></p><ul class="small">${errors.map(e => `<li>${esc(e)}</li>`).join("")}</ul>`);
+    }
+
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">${frDate(entry.session_date)}</h2>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">${badges.join("")}</div>
+      </div>
+      ${lines.join("")}
+    </div>`;
+  }).join("");
+}
+
+$("#btn-history-refresh").addEventListener("click", () => loadHistory(true));
+
+/* ---------------- Diagnostic ---------------- */
+$("#btn-check").addEventListener("click", async () => {
+  const btn = $("#btn-check");
+  setLoading("btn-check", true, "Analyse...");
+  msg("check-msg", "Analyse en cours (quelques secondes)…", "info");
+  try {
+    const { job } = await api("/api/check", { strategy: $("#check-strategy").value });
+    const result = await pollJob(job.id, () => msg("check-msg", "Analyse en cours (quelques secondes)…", "info"));
+    const badge = { BUY: "buy", SELL: "sell", HOLD: "hold" };
+    const label = { BUY: "ACHETER", SELL: "VENDRE", HOLD: "NE RIEN FAIRE" };
+    $("#check-result").innerHTML = `
+      <p class="small" style="margin-top:14px">Décision proposée pour chaque action suivie :</p>
+      <div class="table-wrap"><table><thead><tr><th>Action</th><th>Décision</th><th>Prix actuel</th><th>Filet proposé</th><th>Pourquoi</th></tr></thead><tbody>
+      ${result.signals.map(r => `<tr><td><b>${esc(r.symbol)}</b></td>
+        <td><span class="badge ${badge[r.action] || "hold"}">${label[r.action] || esc(r.action)}</span></td>
+        <td class="num">${money2(r.price)}</td>
+        <td class="num">${r.proposed_stop ? money2(r.proposed_stop) : "—"}</td>
+        <td class="small">${esc(r.reason)}</td></tr>`).join("")}
+      </tbody></table></div>
+      ${(result.errors || []).length ? `<div class="banner"><b>Symboles écartés :</b><ul class="small" style="margin:6px 0 0">${(result.errors || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}`;
+    msg("check-msg", "Diagnostic terminé. Rien n'a été acheté ni vendu.", "ok");
+  } catch (e) { msg("check-msg", e.message, "err"); }
+  setLoading("btn-check", false);
+});
+
+/* ---------------- Backtest ---------------- */
+$("#btn-backtest").addEventListener("click", async () => {
+  const btn = $("#btn-backtest");
+  btn.disabled = true;
+  $("#bt-result").innerHTML = "";
+  msg("bt-msg", "Test en cours : téléchargement des prix puis simulation, environ 30 secondes…", "info");
+  const symbols = $("#bt-symbols").value.split(",").map(s => s.trim()).filter(Boolean);
+  try {
+    const { job } = await api("/api/backtest", {
+      strategy: btStrategy, symbols, start: $("#bt-start").value
+    });
+    const r = await pollJob(job.id, () => msg("bt-msg", "Simulation en cours…", "info"));
+    const m = r.metrics;
+    const gain = m.total_return, dd = m.max_drawdown;
+    $("#bt-result").innerHTML = `
+      <div class="card">
+        <h2>Résultat — ${esc(STRATEGIES[r.strategy]?.name || r.strategy)} sur ${esc(r.symbols.join(", "))}</h2>
+        <div class="tiles">
+          <div class="tile"><div class="label">Gain total</div><div class="value ${cls(gain)}">${pct(gain)}<br><small>soit ${money2(m.final_equity - m.initial_equity)}</small></div></div>
+          <div class="tile"><div class="label">Pire chute encaissée</div><div class="value neg">${(dd * 100).toFixed(1).replace(".", ",")} %</div></div>
+          <div class="tile"><div class="label">Gains par an (moyenne)</div><div class="value ${cls(m.cagr)}">${pct(m.cagr)}</div></div>
+          <div class="tile"><div class="label">Paris gagnants</div><div class="value">${m.win_rate ? (m.win_rate * 100).toFixed(0) + " %" : "—"}</div></div>
+          <div class="tile"><div class="label">Frais payés</div><div class="value">${money2(m.total_fees)}</div></div>
+          <div class="tile"><div class="label">Temps investi</div><div class="value">${(m.exposure_pct * 100).toFixed(0)} %<br><small>du temps en marché</small></div></div>
+        </div>
+        <p class="hint" style="margin-top:12px">Référence de marché (SPY acheté et conservé sur la même période) :
+          <b>${pct(m.benchmark_buy_hold)}</b> — c'est elle qu'il faut battre. Panier équipondéré des actions testées,
+          acheté et conservé : <b>${pct(m.basket_buy_hold)}</b>.</p>
+      </div>
+      <div class="card">
+        <h2>Valeur du compte dans le temps</h2>
+        <p class="hint">Survolez la courbe : date, valeur, et chute à ce moment-là.</p>
+        <div class="chart-wrap" id="chart-wrap">
+          <div class="chart-tip" id="chart-tip"></div>
+          <div id="chart-svg"></div>
+        </div>
+      </div>
+      ${r.trades.length ? `<div class="card">
+        <h2>Les ${r.trades.length} allers-retours simulés (les 10 derniers)</h2>
+        <div class="table-wrap"><table><thead><tr><th>Action</th><th>Acheté le</th><th>Vendu le</th><th>Résultat</th><th>Motif de sortie</th></tr></thead><tbody>
+        ${r.trades.slice(-10).map(t => `<tr><td><b>${esc(t.symbol)}</b></td><td>${frDate(t.entry_date)}</td><td>${frDate(t.exit_date)}</td>
+          <td class="num ${cls(t.pnl)}">${money2(t.pnl)} <small>(${pct(t.return_pct)})</small></td>
+          <td class="small">${esc({ stop_loss: "filet de sécurité", trailing_stop: "filet remonté", strategy_exit: "règle de sortie", circuit_breaker: "coupe-circuit", stop_gap: "trou d'ouverture sous le filet" }[t.reason] || t.reason)}</td></tr>`).join("")}
+        </tbody></table></div></div>` : ""}
+      ${r.halts.length ? `<div class="banner"><b>Coupe-circuits déclenchés pendant le test :</b><ul class="small" style="margin:6px 0 0">
+        ${r.halts.map(h => `<li>${frDate(h.date)} — ${esc(h.reason)}</li>`).join("")}</ul></div>` : ""}
+    `;
+    drawEquityChart(r.equity_points, m.initial_equity);
+    msg("bt-msg", "Test terminé.", "ok");
+  } catch (e) { msg("bt-msg", e.message, "err"); }
+  setLoading("btn-backtest", false);
+});
+
+function drawEquityChart(points, initial) {
+  const W = 760, H = 280, padL = 62, padR = 16, padT = 14, padB = 30;
+  const wrap = $("#chart-svg");
+  if (!points || points.length < 2) { wrap.innerHTML = "<p class='skel'>Pas assez de données.</p>"; return; }
+  const values = points.map(p => p.equity);
+  let vmin = Math.min(...values, initial), vmax = Math.max(...values, initial);
+  const span = vmax - vmin || 1;
+  vmin -= span * 0.05; vmax += span * 0.05;
+  const x = i => padL + (i / (points.length - 1)) * (W - padL - padR);
+  const y = v => padT + (1 - (v - vmin) / (vmax - vmin)) * (H - padT - padB);
+  const path = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.equity).toFixed(1)}`).join("");
+  const gridY = [0, 0.25, 0.5, 0.75, 1].map(f => {
+    const gy = padT + f * (H - padT - padB), gv = vmax - f * (vmax - vmin);
+    return `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="var(--card-border)" stroke-width="1"/>
+      <text x="${padL - 8}" y="${gy + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${money(gv)}</text>`;
+  }).join("");
+  const step = Math.max(1, Math.floor(points.length / 6));
+  const dates = points.map((p, i) => i % step === 0 || i === points.length - 1
+    ? `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${new Date(p.date).toLocaleDateString("fr-FR", { month: "short", year: "2-digit" })}</text>` : "").join("");
+  const baseY = y(initial);
+  wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
+    ${gridY}${dates}
+    <line x1="${padL}" y1="${baseY}" x2="${W - padR}" y2="${baseY}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 4" opacity="0.7"/>
+    <text x="${W - padR}" y="${baseY - 5}" text-anchor="end" font-size="10.5" fill="var(--muted)">départ ${money(initial)}</text>
+    <path d="${path}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round"/>
+    <line id="ch-cross" x1="0" y1="${padT}" x2="0" y2="${H - padB}" stroke="var(--muted)" stroke-width="1" visibility="hidden"/>
+    <circle id="ch-dot" r="4.5" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" visibility="hidden"/>
+  </svg>`;
+  const svg = wrap.querySelector("svg");
+  const tip = $("#chart-tip");
+  function onMove(clientX) {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return;
+    const fx = ((clientX - rect.left) / rect.width) * W;
+    const i = Math.round(Math.min(points.length - 1, Math.max(0, ((fx - padL) / (W - padL - padR)) * (points.length - 1))));
+    const p = points[i];
+    if (!p) return;
+    const cross = svg.querySelector("#ch-cross"), dot = svg.querySelector("#ch-dot");
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(p.equity)); dot.setAttribute("visibility", "visible");
+    tip.style.display = "block";
+    tip.innerHTML = `<b>${frDate(p.date)}</b><br>Valeur : ${money2(p.equity)}<br>Chute depuis le sommet : ${(p.drawdown_pct * 100).toFixed(1).replace(".", ",")} %`;
+    const px = (x(i) / W) * rect.width;
+    tip.style.left = Math.min(px + 12, Math.max(8, rect.width - 180)) + "px";
+    tip.style.top = "6px";
+  }
+  function onLeave() {
+    tip.style.display = "none";
+    const cross = svg.querySelector("#ch-cross"), dot = svg.querySelector("#ch-dot");
+    if (cross) cross.setAttribute("visibility", "hidden");
+    if (dot) dot.setAttribute("visibility", "hidden");
+  }
+  svg.addEventListener("mousemove", ev => onMove(ev.clientX));
+  svg.addEventListener("mouseleave", onLeave);
+  svg.addEventListener("touchstart", ev => {
+    if (ev.touches && ev.touches.length > 0) onMove(ev.touches[0].clientX);
+  }, { passive: true });
+  svg.addEventListener("touchmove", ev => {
+    if (ev.touches && ev.touches.length > 0) onMove(ev.touches[0].clientX);
+  }, { passive: true });
+  svg.addEventListener("touchend", onLeave);
+}
+
+/* ---------------- Pilotage ---------------- */
+$("#btn-automation").addEventListener("click", async () => {
+  const btn = $("#btn-automation");
+  btn.disabled = true;
+  msg("automation-msg", "Installation en cours…", "info");
+  try {
+    const out = await api("/api/automation", { strategy: $("#auto-strategy").value });
+    msg("automation-msg", out.message, "ok");
+    refreshStatus();
+  } catch (e) { msg("automation-msg", e.message, "err"); }
+  setLoading("btn-automation", false);
+});
+function renderCycle(r) {
+  const label = { buy: "achat", sell: "vente" };
+  const orders = (r.orders || []).map(o => `<li>${label[o.side] || esc(o.side)} de ${o.qty} ${esc(o.symbol)} — statut : ${esc(o.status)}</li>`).join("");
+  const dryOrders = (r.decisions || []).filter(d => d.approved && d.symbol).map(d =>
+    `<li>Ordre simulé : <b>${label[d.side] || esc(d.side)}</b> de ${d.qty} <b>${esc(d.symbol)}</b> (motif : ${esc(d.reason)})</li>`
+  ).join("");
+  const errors = (r.errors || []).map(e => `<li>${esc(e)}</li>`).join("");
+  return `<div class="card" style="margin-top:12px">
+    <h2>Cycle ${r.skipped ? "ignoré" : "terminé"} — ${frDate(r.session_date)}</h2>
+    ${r.skipped ? `<p class="hint">${esc(r.skip_reason)}.</p>` : `
+    <p class="hint">Valeur du compte après le cycle : <b>${money2(r.equity)}</b>.</p>
+    ${r.dry_run ? (dryOrders ? `<p class="small"><b>Ordres qui auraient été transmis :</b></p><ul class="small">${dryOrders}</ul>` : "<p class='small'>Répétition générale : aucun ordre d'achat ou de vente n'aurait été nécessaire aujourd'hui.</p>") :
+      (orders ? `<p class="small"><b>Ordres transmis :</b></p><ul class="small">${orders}</ul>` : "<p class='small'>Aucun ordre nécessaire aujourd'hui.</p>")}
+    ${errors ? `<p class="small" style="color:var(--bad)"><b>Alertes :</b></p><ul class="small">${errors}</ul>` : ""}`}
+  </div>`;
+}
+async function runCycle(dryRun) {
+  const btnDry = $("#btn-cycle-dry");
+  const btnLive = $("#btn-cycle-live");
+  btnDry.disabled = true;
+  btnLive.disabled = true;
+  msg("cycle-msg", dryRun ? "Répétition générale en cours…" : "Cycle réel (compte fictif) en cours…", "info");
+  try {
+    const { job } = await api("/api/cycle", { strategy: $("#auto-strategy").value, dry_run: dryRun });
+    const result = await pollJob(job.id);
+    $("#cycle-result").innerHTML = renderCycle(result);
+    msg("cycle-msg", dryRun ? "Répétition générale terminée : aucune somme engagée." : "Cycle terminé.", "ok");
+    refreshStatus();
+    loadHistory(true);
+  } catch (e) { msg("cycle-msg", e.message, "err"); }
+  finally {
+    btnDry.disabled = false;
+    btnLive.disabled = false;
+  }
+}
+$("#btn-cycle-dry").addEventListener("click", () => runCycle(true));
+$("#btn-cycle-live").addEventListener("click", () => {
+  if (!confirm("Le robot va analyser le marché et placer de vrais ordres — sur votre compte D'ENTRAÎNEMENT uniquement (argent fictif). Confirmer ?")) return;
+  runCycle(false);
+});
+
+/* ---------------- Réglages ---------------- */
+const ASSET_LABEL = {
+  us_equity: "action américaine",
+  crypto: "crypto (non géré par ce bot)"
+};
+
+function renderResolved(rows, warning) {
+  const el = $("#settings-resolved");
+  if (!el) return;
+  const note = warning
+    ? `<p class="small" style="color:var(--bad);margin-top:8px">${esc(warning)}</p>`
+    : "";
+  if (!rows || !rows.length) {
+    el.innerHTML = note;
+    return;
+  }
+  el.innerHTML = `
+    <p class="small" style="margin-top:12px"><b>Ce que le robot suivra réellement :</b></p>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Symbole saisi</th><th>Instrument chez Alpaca</th><th>Type</th>
+    </tr></thead><tbody>
+      ${rows.map(r => `<tr><td><b>${esc(r.symbol)}</b></td>
+        <td>${esc(r.name)}</td>
+        <td class="small">${esc(ASSET_LABEL[r.asset_class] || r.asset_class)}</td></tr>`).join("")}
+    </tbody></table></div>${note}`;
+}
+
+$("#btn-settings").addEventListener("click", async () => {
+  setLoading("btn-settings", true, "Vérification...");
+  msg("settings-msg", "Vérification des symboles auprès d'Alpaca…", "info");
+  try {
+    const body = {
+      symbols: $("#set-symbols").value.split(",").map(s => s.trim()).filter(Boolean),
+      webhook_format: $("#set-webhook-format").value,
+      webhook_url: $("#set-webhook-url").value.trim(),
+      webhook_chat_id: $("#set-webhook-chat").value.trim()
+    };
+    // Le jeton n'est transmis que s'il a été saisi : un champ vide conserve
+    // celui déjà enregistré plutôt que de le supprimer.
+    const token = $("#set-webhook-token").value.trim();
+    if (token) body.webhook_token = token;
+    const out = await api("/api/config", body);
+    msg("settings-msg", out.message, "ok");
+    $("#set-webhook-token").value = "";
+    renderResolved(out.resolved, out.warning);
+    refreshStatus();
+  } catch (e) {
+    msg("settings-msg", e.message, "err");
+    renderResolved(null, null);
+  }
+  setLoading("btn-settings", false);
+});
+
+$("#btn-refresh").addEventListener("click", () => {
+  refreshStatus();
+});
+setInterval(refreshStatus, 30000);
+
+refreshStatus();
+
+/* ---------------- Lien direct vers un onglet (#pilot, #backtest&run=1…) ---------------- */
+(function () {
+  const parts = location.hash.replace("#", "").split("&");
+  const tab = (parts[0] || "").replace("tab-", "");
+  if (tab) {
+    const btn = document.querySelector(`nav button[data-tab="${tab}"]`);
+    if (btn) btn.click();
+  }
+  const params = new URLSearchParams(parts.slice(1).join("&"));
+  if (params.get("check") === "1") document.querySelector("#btn-check").click();
+  if (params.get("run") === "1") document.querySelector("#btn-backtest").click();
+})();
+</script>
+
+</body>
+</html>

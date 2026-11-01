@@ -1,0 +1,9 @@
+# Alternative cronie au timer systemd (crontab -e).
+#
+# CRON_TZ fixe le fuseau du planificateur sur la place de cotation : le cycle
+# part toujours a 15:55 heure de New York, meme pendant les changements
+# d'heure des deux rives de l'Atlantique. Ne mettez PAS 21:55 en heure locale
+# de Paris : le decalage n'est pas constant toute l'annee.
+
+CRON_TZ=America/New_York
+55 15 * * 1-5 /home/tom/Documents/trader/tradingbot live --once >> /home/tom/Documents/trader/state/cron.log 2>&1

@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.claude/
+.env
+.env.*
+!.env.example
+state/
+*.log
+trades*.csv

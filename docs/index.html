@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TradingBot — stats récentes</title>
+<style>
+  :root {
+    --surface: #fcfcfb; --plane: #f9f9f7; --ink: #0b0b0b; --ink-2: #52514e;
+    --muted: #898781; --good: #0ca30c; --bad: #d03b3b; --accent: #2a78d6;
+    --border: #e6e5e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --surface: #1a1a19; --plane: #0d0d0d; --ink: #f0efec; --ink-2: #c3c2b7;
+            --muted: #898781; --border: #383835; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--plane); color: var(--ink);
+         font: 16px/1.5 system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border);
+           padding: 14px 16px; position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .sub { color: var(--ink-2); font-size: 13px; }
+  main { padding: 14px 12px 60px; max-width: 760px; margin: 0 auto; }
+  .card { background: var(--surface); border: 1px solid var(--border);
+          border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .card h2 { margin: 0; font-size: 16px; }
+  .top { display: flex; justify-content: space-between; align-items: flex-start;
+         gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px;
+           font-size: 12px; font-weight: 650; }
+  .badge.ok { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
+  .badge.hold { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--ink-2); }
+  .badge.buy { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
+  .badge.sell { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+  .badge.warn { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+  .small { font-size: 13.5px; color: var(--ink-2); }
+  .banner { border-radius: 10px; padding: 10px 12px; margin-top: 8px; font-size: 13.5px;
+            border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
+            background: color-mix(in srgb, var(--bad) 8%, var(--surface)); }
+  .banner b { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; color: var(--ink-2); font-weight: 600; padding: 6px 6px;
+       border-bottom: 1px solid var(--border); }
+  td { padding: 6px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  code { background: var(--plane); border: 1px solid var(--border); border-radius: 6px;
+         padding: 1px 5px; font-size: 13px; word-break: break-all; }
+  .err { color: var(--bad); }
+  button { border-radius: 9px; padding: 10px 16px; font-size: 15px; cursor: pointer;
+           border: 1px solid var(--ink); background: var(--ink); color: var(--plane);
+           font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Robot de trading — stats récentes</h1>
+  <div class="sub">Compte d'entraînement Alpaca (argent fictif)</div>
+</header>
+<main>
+  <div class="card" id="status-card">
+    <div class="small" id="status">Chargement…</div>
+    <div style="margin-top:10px"><button id="btn-refresh">Rafraîchir</button></div>
+  </div>
+  <div id="list"></div>
+</main>
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ *  Les statistiques sont un simple fichier JSON, commité dans ce dépôt
+ *  par le bot lui-même (voir trading_bot/notifications/github.py).
+ *  Aucun serveur, aucune dépendance : GitHub Pages sert le fichier tel quel.
+ * ------------------------------------------------------------------ */
+const STATS_PATH = "data/stats.json";
+
+const $ = (s) => document.querySelector(s);
+const esc = (v) => v == null ? "" : String(v)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+const money = (v) => v == null ? "—" :
+  new Intl.NumberFormat("fr-FR", { style: "currency", currency: "USD" }).format(v);
+const pct = (v) => v == null ? "—" :
+  ((v > 0 ? "+" : "") + (v * 100).toFixed(2).replace(".", ",") + " %");
+const cls = (v) => v > 0 ? "pos" : v < 0 ? "neg" : "";
+const frDate = (iso) => {
+  if (!iso) return "—";
+  const p = String(iso).split("T")[0].split("-");
+  if (p.length !== 3) return String(iso);
+  const d = new Date(+p[0], +p[1] - 1, +p[2]);
+  return d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+};
+const sideLabel = (s) => s === "buy" ? "achat" : s === "sell" ? "vente" : s;
+
+function setStatus(text, bad) {
+  const el = $("#status");
+  el.textContent = text;
+  el.className = bad ? "small err" : "small";
+}
+
+function render(entries) {
+  const list = $("#list");
+  if (!entries.length) {
+    list.innerHTML = `<div class="card"><p class="small">Aucun cycle reçu pour l'instant.
+      Le bot envoie ses stats à la fin de chaque cycle.</p></div>`;
+    return;
+  }
+  list.innerHTML = entries.map((entry) => {
+    const r = entry.report || {};
+    const badges = [];
+    if (r.skipped) {
+      badges.push(`<span class="badge hold">Ignoré</span>`);
+    } else {
+      badges.push(`<span class="badge ok">Cycle exécuté</span>`);
+    }
+    if (r.dry_run) badges.push(`<span class="badge warn">Répétition</span>`);
+
+    const signals = Object.entries(r.signals || {});
+    const orders = r.orders || [];
+    const approved = (r.decisions || []).filter((d) => d.approved);
+    const halts = r.halts || [];
+    const errors = r.errors || [];
+    const lines = [];
+
+    if (r.skipped) {
+      lines.push(`<p class="small">Le robot s'est réveillé mais n'a rien fait :
+        ${esc(r.skip_reason || "séance non ouverte")}.</p>`);
+    } else {
+      lines.push(`<p class="small">Valeur du compte : <b>${money(r.equity)}</b></p>`);
+      if (signals.length) {
+        lines.push(`<p class="small">${signals.map(([s, a]) =>
+          `<span class="badge ${a === "BUY" ? "buy" : a === "SELL" ? "sell" : "hold"}">${esc(s)} ${esc(a)}</span>`
+        ).join(" ")}</p>`);
+      }
+      if (orders.length) {
+        lines.push(`<table><thead><tr><th>Ordre</th><th class="num">Qté</th><th class="num">Prix</th></tr></thead><tbody>${
+          orders.map((o) => `<tr><td><b>${esc(o.symbol)}</b> ${esc(sideLabel(o.side))}</td>
+            <td class="num">${esc(o.qty)}</td>
+            <td class="num">${o.avg_fill_price ? money(o.avg_fill_price) : esc(o.status)}</td></tr>`).join("")
+        }</tbody></table>`);
+      } else {
+        lines.push(`<p class="small">Aucun ordre transmis ce jour-là.</p>`);
+      }
+      if (approved.length) {
+        lines.push(`<p class="small">Filets posés : ${approved.filter(d => d.stop_price)
+          .map((d) => `${esc(d.symbol)} à ${money(d.stop_price)}`).join(", ") || "—"}</p>`);
+      }
+    }
+    if (halts.length) {
+      lines.push(`<div class="banner"><b>Coupe-circuit :</b> ${halts.map((h) =>
+        esc(h.reason)).join(" ; ")}</div>`);
+    }
+    if (errors.length) {
+      lines.push(`<div class="banner"><b>Alertes :</b> ${errors.map(esc).join(" ; ")}</div>`);
+    }
+
+    return `<div class="card">
+      <div class="top">
+        <h2>${esc(frDate(r.session_date))}</h2>
+        <div>${badges.join(" ")}</div>
+      </div>
+      ${lines.join("")}
+    </div>`;
+  }).join("");
+}
+
+async function load() {
+  setStatus("Chargement…");
+  try {
+    // Paramètre anti-cache : GitHub Pages met les fichiers en cache, ce qui
+    // afficherait sinon des statistiques périmées.
+    const res = await fetch(STATS_PATH + "?t=" + Date.now());
+    if (!res.ok) throw new Error("réponse HTTP " + res.status);
+    const data = await res.json();
+    const entries = data.entries || [];
+    render(entries);
+    const last = entries.length ? entries[0].received_at : null;
+    const parts = [entries.length + " cycle(s) enregistré(s)"];
+    if (last) parts.push("dernier cycle : " + new Date(last).toLocaleString("fr-FR"));
+    if (data.updated_at) parts.push("fichier mis à jour le " + new Date(data.updated_at).toLocaleString("fr-FR"));
+    setStatus(parts.join(" — "));
+  } catch (e) {
+    setStatus("Lecture impossible : " + e.message, true);
+  }
+}
+
+$("#btn-refresh").addEventListener("click", load);
+load();
+</script>
+</body>
+</html>

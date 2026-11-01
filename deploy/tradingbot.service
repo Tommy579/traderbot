@@ -1,0 +1,19 @@
+# Unité systemd UTILISATEUR du TradingBot (installée par deploy/install.sh).
+# Template : @PROJECT_DIR@ est substitué par le chemin réel du projet.
+
+[Unit]
+Description=TradingBot Alpaca - cycle de paper trading quotidien
+Documentation=file://@PROJECT_DIR@/README.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PROJECT_DIR@
+ExecStart=@PROJECT_DIR@/.venv/bin/python -m trading_bot.main live --once
+# Réseau indisponible au moment du déclenchement : on retente, on ne saute
+# pas la séance.
+Restart=on-failure
+RestartSec=60s
+# Un cycle bloqué (API muette) ne doit pas s'éterniser.
+TimeoutStartSec=300
+# Le bot lit sa configuration dans le .env du projet (pydantic-settings).
+Environment=PYTHONUNBUFFERED=1

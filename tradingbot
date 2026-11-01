@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Lanceur du bot de paper trading.
+#
+# Usage :
+#   ./tradingbot check
+#   ./tradingbot backtest --symbols AAPL,MSFT --start 2022-01-01
+#   ./tradingbot live --once --dry-run
+#   ./tradingbot live
+#
+# Le shell de l'agent exporte parfois un PYTHONPATH vers un autre venv :
+# on le neutralise pour forcer l'usage de .venv du projet.
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UV_BIN="${UV_BIN:-$(command -v uv || echo "${HOME}/.hermes/bin/uv")}"
+
+unset PYTHONPATH
+cd "${PROJECT_DIR}"
+exec "${UV_BIN}" run python -m trading_bot.main "$@"
