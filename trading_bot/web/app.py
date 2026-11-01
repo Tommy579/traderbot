@@ -821,6 +821,30 @@ def build_handler(context: WebContext) -> type[BaseHTTPRequestHandler]:
                 self.end_headers()
                 self.wfile.write(page)
                 return
+            static_assets: dict[str, tuple[str, str]] = {
+                "/favicon.svg": ("image/svg+xml", "favicon.svg"),
+                "/favicon.ico": ("image/x-icon", "favicon.ico"),
+                "/apple-touch-icon.png": ("image/png", "apple-touch-icon.png"),
+                "/icon-192.png": ("image/png", "icon-192.png"),
+                "/icon-512.png": ("image/png", "icon-512.png"),
+                "/icon-maskable-512.png": ("image/png", "icon-maskable-512.png"),
+                "/manifest.webmanifest": (
+                    "application/manifest+json; charset=utf-8",
+                    "manifest.webmanifest",
+                ),
+            }
+            if path in static_assets:
+                mime_type, filename = static_assets[path]
+                asset_file = Path(__file__).parent / "static" / filename
+                if asset_file.is_file():
+                    data = asset_file.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", mime_type)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
             match = re.fullmatch(r"/api/job/([0-9a-f]+)", path)
             if match:
                 job = context.jobs.get(match.group(1))

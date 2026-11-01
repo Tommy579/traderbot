@@ -3,7 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TradingBot — tableau de bord</title>
+<title>TradingBot : tableau de bord</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="alternate icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#111110">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TradingBot">
 <style>
   :root {
     --surface-1: #fcfcfb;
@@ -51,8 +60,10 @@
     top: 0;
     z-index: 10;
   }
-  header h1 { font-size: 18px; margin: 0; }
-  header .sub { color: var(--ink-2); font-size: 13px; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .logo { width: 38px; height: 38px; border-radius: 9px; flex-shrink: 0; display: block; }
+  .brand h1 { font-size: 18px; margin: 0; line-height: 1.25; }
+  .brand .sub { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
   nav { display: flex; gap: 6px; flex-wrap: wrap; }
   nav button {
     border: 1px solid var(--card-border);
@@ -187,9 +198,12 @@
 <body>
 <div class="toast-container" id="toast-container"></div>
 <header>
-  <div>
-    <h1>Robot de trading (entraînement)</h1>
-    <div class="sub">Argent fictif sur Alpaca Paper — aucune vraie somme ne peut être engagée.</div>
+  <div class="brand">
+    <img src="/favicon.svg" alt="Logo TradingBot" class="logo" width="38" height="38">
+    <div>
+      <h1>Robot de trading (entraînement)</h1>
+      <div class="sub">Argent fictif sur Alpaca Paper : aucune vraie somme ne peut être engagée.</div>
+    </div>
   </div>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <button id="btn-refresh" class="secondary" style="padding:7px 12px;font-size:13px;border-radius:8px">Actualiser</button>

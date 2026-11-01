@@ -726,3 +726,29 @@ def test_config_without_registry_still_saves(settings, web_bars) -> None:
         httpd.shutdown()
 
 
+def test_static_assets_and_pwa_manifest(settings, web_bars) -> None:
+    httpd, port = start_server(make_context(settings, web_bars))
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/favicon.svg")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type") == "image/svg+xml"
+            assert b"<svg" in resp.read()
+
+        req_manifest = urllib.request.Request(f"http://127.0.0.1:{port}/manifest.webmanifest")
+        with urllib.request.urlopen(req_manifest, timeout=10) as resp:
+            assert resp.status == 200
+            assert "application/manifest+json" in resp.headers.get("Content-Type", "")
+            manifest = json.loads(resp.read().decode())
+            assert manifest["short_name"] == "TradingBot"
+
+        req_ico = urllib.request.Request(f"http://127.0.0.1:{port}/favicon.ico")
+        with urllib.request.urlopen(req_ico, timeout=10) as resp:
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type") == "image/x-icon"
+            assert len(resp.read()) > 0
+    finally:
+        httpd.shutdown()
+
+
+

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#111110"/>
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="none" stroke="#262623" stroke-width="12"/>
+  <!-- Bougie 1 : repli / consolidation sobre -->
+  <line x1="188" y1="160" x2="188" y2="390" stroke="#52514e" stroke-width="22" stroke-linecap="round"/>
+  <rect x="146" y="230" width="84" height="120" rx="16" fill="#272624" stroke="#52514e" stroke-width="10"/>
+  <!-- Bougie 2 : impulsion haussiere -->
+  <line x1="324" y1="100" x2="324" y2="350" stroke="#2a78d6" stroke-width="22" stroke-linecap="round"/>
+  <rect x="282" y="140" width="84" height="170" rx="16" fill="#2a78d6"/>
+</svg>
