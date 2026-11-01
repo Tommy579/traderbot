@@ -289,6 +289,68 @@ def test_dry_run_never_transmits_order(settings, bot_bars) -> None:
     assert "AAPL" not in state.stops
 
 
+def make_news(score: float, *, critical: bool = False, symbol: str = "AAPL") -> NewsAssessment:
+    """Verdict d'actualités prêt à l'emploi pour les tests de cycle."""
+    return NewsAssessment(
+        symbol=symbol,
+        sentiment_score=score,
+        confidence=0.8,
+        is_critical_threat=critical,
+        rationale="test",
+        articles_count=2,
+        updated_at=NOW,
+    )
+
+
+def test_dry_run_still_consults_the_news_filter(settings, bot_bars) -> None:
+    """Une répétition ne transmet aucun ordre, mais consomme bien le filtre.
+
+    Conséquence à connaître avant de cliquer « simulation » un jour de marché
+    ouvert : le cycle appelle réellement OpenRouter et réécrit l'état partagé
+    (``processed_news_ids.json`` et ``news_sentiment.json``). Ce n'est donc
+    pas gratuit — mais cela ne touche ni aux positions ni aux ordres.
+    """
+    dry_settings = settings.model_copy(update={"dry_run": True})
+    broker = FakeBroker()
+    news = FakeNewsAnalyzer({"AAPL": make_news(0.10)})
+    bot = TradingBot(
+        dry_settings,
+        AlwaysBuyStrategy(),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bot_bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+        news_analyzer=news,  # type: ignore[arg-type]
+    )
+    report = bot.run_once()
+
+    assert not report.skipped, "séance ouverte : le cycle va bien au bout"
+    assert broker.orders == [], "une répétition ne transmet jamais d'ordre"
+    assert news.calls, "mais elle interroge bien le filtre d'actualités"
+
+
+def test_closed_market_stops_before_the_news_filter(settings, bot_bars) -> None:
+    """Séance close : le cycle sort avant tout appel d'actualités.
+
+    C'est ce qui rend une simulation inoffensive le week-end : ni appel
+    facturé, ni réécriture de l'état des notes.
+    """
+    broker = FakeBroker(market_open=False)
+    news = FakeNewsAnalyzer({"AAPL": make_news(-0.90, critical=True)})
+    bot = TradingBot(
+        settings,
+        AlwaysBuyStrategy(),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bot_bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+        news_analyzer=news,  # type: ignore[arg-type]
+    )
+    report = bot.run_once()
+
+    assert report.skipped
+    assert broker.orders == []
+    assert news.calls == [], "aucun appel facturé quand la séance est close"
+
+
 def test_market_closed_skips_cycle(settings, bot_bars) -> None:
     broker = FakeBroker(market_open=False, market_closure=MarketClosure.WEEKEND)
     report = make_bot(settings, bot_bars, broker).run_once()
