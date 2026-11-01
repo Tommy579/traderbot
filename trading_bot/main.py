@@ -473,6 +473,9 @@ class CycleReport:
     skipped: bool = False
     skip_reason: str | None = None
     equity: float = 0.0
+    cash: float = 0.0
+    positions_count: int = 0
+    unrealized_pnl: float = 0.0
     signals: dict[str, str] = field(default_factory=dict)
     decisions: list[RiskDecision] = field(default_factory=list)
     orders: list[OrderReceipt] = field(default_factory=list)
@@ -487,6 +490,9 @@ class CycleReport:
             "skipped": self.skipped,
             "skip_reason": self.skip_reason,
             "equity": self.equity,
+            "cash": self.cash,
+            "positions_count": self.positions_count,
+            "unrealized_pnl": self.unrealized_pnl,
             "signals": dict(self.signals),
             "decisions": [
                 {
@@ -700,6 +706,9 @@ class TradingBot:
             self._flatten(account, marks, now, report)
             self._persist(account)
             report.equity = account.equity
+            report.cash = account.cash
+            report.positions_count = len(account.positions)
+            report.unrealized_pnl = sum(p.unrealized_pnl for p in account.positions.values())
             self._notify(report)
             return report
 
@@ -801,6 +810,9 @@ class TradingBot:
         self._recompute_equity(account, marks)
         self._persist(account)
         report.equity = account.equity
+        report.cash = account.cash
+        report.positions_count = len(account.positions)
+        report.unrealized_pnl = sum(p.unrealized_pnl for p in account.positions.values())
         self._notify(report)
         return report
 

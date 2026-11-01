@@ -670,7 +670,18 @@ function renderHistory(entries) {
     if (entry.skipped) {
       lines.push(`<p class="hint">Le robot s'est réveillé mais n'a rien fait : ${esc(entry.skip_reason || "séance non ouverte")}.</p>`);
     } else {
-      lines.push(`<p class="hint">Valeur du compte après le cycle : <b>${money2(entry.equity)}</b>.</p>`);
+      const hasAccountDetails = entry.cash != null || entry.positions_count != null || entry.unrealized_pnl != null;
+      if (hasAccountDetails) {
+        const pnl = entry.unrealized_pnl || 0;
+        lines.push(`<div class="tiles" style="margin-bottom:12px">
+          <div class="tile"><div class="label">Valeur totale</div><div class="value">${money2(entry.equity)}</div></div>
+          <div class="tile"><div class="label">Cash disponible</div><div class="value">${money2(entry.cash)}</div></div>
+          <div class="tile"><div class="label">Actions détenues</div><div class="value">${entry.positions_count ?? 0}</div></div>
+          <div class="tile"><div class="label">Gains / pertes latents</div><div class="value ${cls(pnl)}">${(pnl > 0 ? "+" : "") + money2(pnl)}</div></div>
+        </div>`);
+      } else {
+        lines.push(`<p class="hint">Valeur du compte après le cycle : <b>${money2(entry.equity)}</b>.</p>`);
+      }
       if (signals.length) {
         lines.push(`<p class="small"><b>Signaux lus :</b> ${signals.map(([sym, act]) =>
           `<span class="badge ${SIGNAL_CLS[act] || "hold"}">${esc(sym)} : ${esc(act)}</span>`).join(" ")}</p>`);
