@@ -489,6 +489,39 @@ def test_shared_articles_are_not_duplicated_in_the_registry(tmp_path: Path) -> N
     assert registry["ids"] == ["1"]
 
 
+def test_a_partial_run_does_not_erase_other_verdicts(tmp_path: Path) -> None:
+    """Noter un seul symbole ne doit pas effacer les verdicts des autres.
+
+    Défaut observé en production : « news --symbols NVDA » a remplacé le
+    fichier d'état par son seul verdict. Le passage suivant, complet, a
+    substitué aux douze autres symboles une note neutre de repli — et comme
+    leurs articles étaient déjà au registre, ces notes neutres se sont figées :
+    filtre aveugle sur tout l'univers, sans aucun signal d'alerte.
+    """
+    client = FakeNewsClient({"NVDA": [make_article(1)], "AMD": [make_article(2)]})
+    transport = FakeTransport(body=llm_body(-0.40, confidence=0.7))
+    analyzer = NewsSentimentAnalyzer(
+        state_dir=tmp_path / "state",
+        alpaca_api_key="PK_TEST",
+        alpaca_secret_key="SECRET_TEST",
+        openrouter_api_key="sk-or-test",
+        model=MODEL,
+        news_client=client,
+        transport=transport,
+    )
+
+    analyzer.assess(["NVDA", "AMD"], now=NOW)
+    stored = json.loads(analyzer.assessments_path.read_text(encoding="utf-8"))
+    assert set(stored["assessments"]) == {"NVDA", "AMD"}
+
+    # Passage partiel : le verdict d'AMD doit survivre intact.
+    analyzer.assess(["NVDA"], now=NOW + timedelta(minutes=5))
+    stored = json.loads(analyzer.assessments_path.read_text(encoding="utf-8"))
+    assert set(stored["assessments"]) == {"NVDA", "AMD"}
+    assert stored["assessments"]["AMD"]["confidence"] > 0
+    assert stored["assessments"]["AMD"]["rationale"] != "aucune actualité récente"
+
+
 def test_no_article_means_no_model_call(tmp_path: Path) -> None:
     """Un symbole sans actualité n'entraîne aucun appel payant."""
     transport = FakeTransport(body=llm_body(0.5))

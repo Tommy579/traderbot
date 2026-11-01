@@ -606,12 +606,13 @@ class NewsSentimentAnalyzer:
                 # faire croire que l'article a été traité.
                 fresh_ids.extend(article.article_id for article in unseen)
 
-        if fresh_ids:
-            self._save_state(results, known + fresh_ids, moment)
-        elif results:
-            # Aucun jeton dépensé : rien à réécrire, sinon les verdicts
-            # précédents ont déjà été persistés lors de leur calcul.
-            self._save_state(results, known, moment)
+        # Fusion avec les verdicts déjà connus : un passage partiel (par
+        # exemple « news --symbols NVDA ») ne doit pas effacer les notes des
+        # autres symboles. Sans cela, le passage suivant les retrouve absents,
+        # y substitue une note neutre de repli, et le filtre devient aveugle
+        # sur tout l'univers sans que rien ne le signale.
+        if results:
+            self._save_state({**previous, **results}, known + fresh_ids, moment)
         return results
 
     def _save_state(
