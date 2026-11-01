@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import trading_bot.main as trading_main
 from trading_bot.config import ConfigurationError, Settings
 from trading_bot.execution.alpaca_client import (
     AccountSnapshot,
@@ -577,6 +578,52 @@ def test_benchmark_label_follows_the_configuration(bot_bars) -> None:
     assert "QQQ" in strategy.explain(
         strategy.prepare(bot_bars), SignalType.HOLD
     )
+
+
+def test_publish_stats_backfills_oldest_first(settings, monkeypatch) -> None:
+    """La republication envoie les cycles du plus ancien au plus récent.
+
+    L'ordre compte : le fichier distant se construit par ajouts successifs,
+    donc publier le plus récent d'abord laisserait l'historique en désordre.
+    """
+    store = HistoryStore(settings.state_dir / "history.jsonl")
+    store.record(
+        {"session_date": "2024-01-08", "skipped": False, "equity": 100_000.0},
+        source="timer",
+    )
+    store.record(
+        {"session_date": "2024-01-09", "skipped": False, "equity": 101_000.0},
+        source="gui",
+    )
+
+    sent: list[dict] = []
+
+    class RecordingPublisher:
+        def send(self, event: str, payload: dict) -> bool:
+            sent.append({"event": event, "payload": payload})
+            return True
+
+    monkeypatch.setattr(trading_main, "_settings_from_args", lambda _args: settings)
+    monkeypatch.setattr(
+        trading_main, "_build_stats_publisher", lambda _settings: RecordingPublisher()
+    )
+
+    assert trading_main.cmd_publish_stats(argparse.Namespace()) == 0
+    assert [call["payload"]["session_date"] for call in sent] == [
+        "2024-01-08",
+        "2024-01-09",
+    ]
+    assert sent[0]["event"] == "cycle_trading"
+    # Les métadonnées de stockage local ne font pas partie du rapport publié.
+    assert "recorded_at" not in sent[0]["payload"]
+    assert "source" not in sent[0]["payload"]
+
+
+def test_publish_stats_reports_missing_configuration(settings, monkeypatch) -> None:
+    """Sans dépôt ni jeton, la commande échoue proprement plutôt que en silence."""
+    monkeypatch.setattr(trading_main, "_settings_from_args", lambda _args: settings)
+    monkeypatch.setattr(trading_main, "_build_stats_publisher", lambda _settings: None)
+    assert trading_main.cmd_publish_stats(argparse.Namespace()) == 2
 
 
 def test_cycle_sends_webhook_report(settings, bot_bars) -> None:

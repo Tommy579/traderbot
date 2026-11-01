@@ -1348,6 +1348,51 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_publish_stats(args: argparse.Namespace) -> int:
+    """Commande ``publish-stats`` : republie l'historique local vers GitHub.
+
+    Sert à rattraper les cycles antérieurs à la mise en place de la
+    publication, ou ceux dont l'envoi a échoué (PC éteint, réseau coupé, jeton
+    posé après coup). La publication normale, elle, a lieu à la fin de chaque
+    cycle sans rien demander.
+    """
+    settings = _settings_from_args(args)
+    logger = configure_logging(settings)
+    publisher = _build_stats_publisher(settings)
+    if publisher is None:
+        logger.error(
+            "publication non configurée : renseignez STATS_GITHUB_REPO et "
+            "STATS_GITHUB_TOKEN (voir .env.example)"
+        )
+        return 2
+
+    store = HistoryStore(settings.state_dir / "history.jsonl")
+    rows = store.entries(limit=-1)
+    if not rows:
+        logger.error("aucun cycle enregistré dans %s", store.path)
+        return 1
+
+    published = 0
+    # Du plus ancien au plus récent : le fichier distant se construit dans
+    # l'ordre, et la règle « une entrée par séance » s'applique correctement.
+    for row in reversed(rows):
+        report = {
+            key: value
+            for key, value in row.items()
+            if key not in {"recorded_at", "source", "recovered_from"}
+        }
+        session = str(report.get("session_date", "?"))
+        if publisher.send("cycle_trading", report):
+            published += 1
+            print(f"  publié : {session}")
+        else:
+            logger.warning("cycle %s non publié", session)
+
+    total = len(rows)
+    print(f"\n{published}/{total} cycle(s) publié(s) dans {settings.stats_github_repo}")
+    return 0 if published == total else 1
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     """Commande ``backtest`` : télécharge les données et exécute la simulation."""
     settings = Settings()
@@ -1516,6 +1561,13 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--symbols", help="univers CSV")
     web.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     web.set_defaults(func=cmd_web)
+
+    publish = subparsers.add_parser(
+        "publish-stats",
+        help="republier l'historique local vers GitHub (rattrapage)",
+    )
+    publish.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    publish.set_defaults(func=cmd_publish_stats)
 
     backtest = subparsers.add_parser(
         "backtest", help="backtest déterministe sur données yfinance"
