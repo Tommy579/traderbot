@@ -620,8 +620,16 @@ class NewsSentimentAnalyzer:
         registry: Sequence[str],
         now: datetime,
     ) -> None:
-        """Persiste verdicts et registre d'articles."""
-        trimmed = [str(item) for item in registry][-MAX_REGISTRY_ENTRIES:]
+        """Persiste verdicts et registre d'articles.
+
+        Le registre est dédoublonné en conservant l'ordre : un même article
+        revient légitimement plusieurs fois dans un même passage (il est tagué
+        de plusieurs symboles et alimente donc plusieurs invites), mais il ne
+        doit figurer qu'une fois sur disque.
+        """
+        trimmed = list(dict.fromkeys(str(item) for item in registry))[
+            -MAX_REGISTRY_ENTRIES:
+        ]
         self._write_json(
             self.registry_path,
             {"updated_at": now.isoformat(), "ids": trimmed},

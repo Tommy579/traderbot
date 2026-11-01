@@ -462,6 +462,33 @@ def test_an_http_error_is_also_retried(tmp_path: Path) -> None:
     assert refreshed.sentiment_score == pytest.approx(-0.65)
 
 
+def test_shared_articles_are_not_duplicated_in_the_registry(tmp_path: Path) -> None:
+    """Un article tagué de deux symboles n'est inscrit qu'une fois.
+
+    Constaté sur les fichiers d'état réels : 23 identifiants pour 20 uniques.
+    L'article est bien analysé pour chaque symbole — les invites diffèrent —
+    mais il ne doit pas s'accumuler en doublons sur disque.
+    """
+    shared = make_article(1, symbols=("NVDA", "AMD"))
+    client = FakeNewsClient({"NVDA": [shared], "AMD": [shared]})
+    transport = FakeTransport(body=llm_body(-0.30))
+    analyzer = NewsSentimentAnalyzer(
+        state_dir=tmp_path / "state",
+        alpaca_api_key="PK_TEST",
+        alpaca_secret_key="SECRET_TEST",
+        openrouter_api_key="sk-or-test",
+        model=MODEL,
+        news_client=client,
+        transport=transport,
+    )
+    analyzer.assess(["NVDA", "AMD"], now=NOW)
+
+    # Deux symboles, deux invites : l'appel par symbole reste légitime.
+    assert len(transport.calls) == 2
+    registry = json.loads(analyzer.registry_path.read_text(encoding="utf-8"))
+    assert registry["ids"] == ["1"]
+
+
 def test_no_article_means_no_model_call(tmp_path: Path) -> None:
     """Un symbole sans actualité n'entraîne aucun appel payant."""
     transport = FakeTransport(body=llm_body(0.5))
@@ -638,7 +665,7 @@ def test_settings_expose_the_news_defaults() -> None:
     assert settings.news_filter_enabled is True
     assert settings.openrouter_model == MODEL
     assert settings.news_lookback_hours == 24
-    assert settings.news_timeout_seconds == pytest.approx(5.0)
+    assert settings.news_timeout_seconds == pytest.approx(20.0)
     assert settings.risk.news_veto_threshold == pytest.approx(-0.60)
     assert settings.risk.news_panic_exit_threshold == pytest.approx(-0.85)
 

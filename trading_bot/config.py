@@ -348,7 +348,14 @@ class Settings(BaseSettings):
         ),
     )
     news_timeout_seconds: float = Field(
-        5.0, ge=1.0, le=30.0, description="Délai maximal d'un appel OpenRouter."
+        20.0,
+        ge=1.0,
+        le=60.0,
+        description=(
+            "Délai maximal d'un appel OpenRouter. Mesuré à ~6 s pour 8 articles "
+            "avec le modèle par défaut : un délai plus court ferait échouer "
+            "tous les appels, et le filtre resterait neutre en silence."
+        ),
     )
 
     risk: RiskConfig = Field(default_factory=RiskConfig)
