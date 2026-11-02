@@ -227,21 +227,32 @@ class GitHubStatsPublisher:
         event: str,
         payload: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
-        """Insère l'entrée en respectant la règle « une par séance »."""
+        """Insère ou remplace l'entrée en respectant la règle « une par séance »."""
         entry = {
             "received_at": self._clock().isoformat(),
             "event": event,
             "report": dict(payload),
         }
         session = payload.get("session_date")
-        last = entries[-1] if entries else None
-        last_session = (
-            last.get("report", {}).get("session_date") if isinstance(last, dict) else None
-        )
-        if session is not None and last_session == session:
-            entries = [*entries[:-1], entry]
+        if session is not None:
+            # Recherche si la séance existe déjà n'importe où dans la liste
+            replaced = False
+            new_entries = []
+            for existing in entries:
+                existing_session = (
+                    existing.get("report", {}).get("session_date")
+                    if isinstance(existing, dict)
+                    else None
+                )
+                if existing_session == session:
+                    new_entries.append(entry)
+                    replaced = True
+                else:
+                    new_entries.append(existing)
+            entries = new_entries if replaced else [*entries, entry]
         else:
             entries = [*entries, entry]
+
         if len(entries) > _MAX_ENTRIES:
             entries = entries[-_MAX_ENTRIES:]
         return entries
