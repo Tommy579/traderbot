@@ -235,7 +235,6 @@
       <button data-tab="backtest">Tester sur le passé</button>
       <button data-tab="pilot">Piloter</button>
       <button data-tab="settings">Réglages</button>
-      <button data-tab="learn">Comprendre</button>
     </nav>
   </div>
 </header>
@@ -389,13 +388,9 @@
         <li>Le robot ne peut dépenser qu'une petite part du compte par achat.</li>
       </ul>
     </div>
-  </section>
-
-  <!-- ====================== COMPRENDRE ====================== -->
-  <section id="learn">
     <div class="card">
-      <h2>Les 30 secondes pour comprendre ce robot</h2>
-      <p class="hint">Vous donnez au robot une liste d'actions et une méthode. Chaque jour, il regarde les prix, applique la méthode, et achète ou vend sur un compte <b>d'entraînement</b> (argent fictif). Il ne peut jamais toucher de vraie money : l'adresse du service est verrouillée sur le mode entraînement d'Alpaca.</p>
+      <h2>Comprendre le robot</h2>
+      <p class="hint">Vous donnez au robot une liste d'actions et une méthode. Chaque jour, il regarde les prix, applique la méthode, et achète ou vend sur un compte <b>d'entraînement</b> (argent fictif). Il ne peut jamais toucher de vraie monnaie : l'adresse du service est verrouillée sur le mode entraînement d'Alpaca.</p>
       <details><summary>« Paper trading » ?</summary><p>Un compte de simulation parfait : vrais prix du marché, faux argent. Idéal pour apprendre sans risque.</p></details>
       <details><summary>Une stratégie, c'est quoi ?</summary><p>Une règle précise et froide. Ex : « j'achète quand le prix dépasse son plus haut des 20 derniers jours, et je vends quand il passe sous son plus bas des 10 derniers jours ». Le robot applique la règle sans humeur ni doute.</p></details>
       <details><summary>Stop (ou stop-loss)</summary><p>Un filet de sécurité posé juste après chaque achat : « si le prix descend sous X, vends tout de suite ». Il limite la casse sur un mauvais coup. Ici il est placé directement chez le courtier : même si votre ordinateur s'éteint, il tient.</p></details>
