@@ -95,6 +95,17 @@
            border: 1px solid var(--ink); background: var(--ink); color: var(--plane);
            font-weight: 600; }
   .quote-live { color: var(--good); font-weight: 600; }
+  dialog {
+    border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
+    color: var(--ink); padding: 18px; max-width: 440px; width: 92%; box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.45); backdrop-filter: blur(2px); }
+  .dialog-input {
+    background: var(--plane); color: var(--ink); border: 1px solid var(--border);
+    border-radius: 7px; padding: 8px 10px; font-size: 13.5px; width: 100%; outline: none;
+    font-family: monospace; margin: 4px 0 12px;
+  }
+  .dialog-input:focus { border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -142,9 +153,9 @@
           <tbody id="positions-tbody"></tbody>
         </table>
       </div>
-      <div class="small" style="margin-top: 8px;">
+      <div class="small" style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
         <span id="live-status-note">Cotations : dernier cours enregistré.</span>
-        <a href="#" id="link-finnhub" style="color: var(--accent); text-decoration: none; margin-left: 6px;">[Clé Finnhub temps réel]</a>
+        <button id="btn-open-alpaca" type="button" style="padding: 4px 10px; font-size: 12.5px; border-radius: 6px; background: transparent; border: 1px solid var(--border); color: var(--accent); cursor: pointer;">Identifiants Alpaca (direct)</button>
       </div>
     </div>
   </div>
@@ -154,6 +165,21 @@
   </div>
   <div id="list"></div>
 </main>
+
+<dialog id="modal-alpaca">
+  <h3 style="margin: 0 0 6px; font-size: 16px;">Connexion directe Alpaca (IEX)</h3>
+  <p class="small" style="margin: 0 0 12px;">Ces identifiants sont stockés <b>uniquement dans votre navigateur</b> (localStorage privé). Ils ne sont jamais envoyés à GitHub.</p>
+  <label class="small" style="font-weight: 600; display: block;">Clé API Alpaca (APCA-API-KEY-ID)</label>
+  <input id="input-alpaca-key" class="dialog-input" type="text" placeholder="PK...">
+  <label class="small" style="font-weight: 600; display: block;">Clé secrète Alpaca (APCA-API-SECRET-KEY)</label>
+  <input id="input-alpaca-secret" class="dialog-input" type="password" placeholder="Clé secrète...">
+  <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;">
+    <button id="btn-alpaca-clear" type="button" style="background: transparent; border: 1px solid var(--border); color: var(--bad); padding: 7px 12px; font-size: 13px;">Effacer</button>
+    <button id="btn-alpaca-close" type="button" style="background: transparent; border: 1px solid var(--border); color: var(--ink); padding: 7px 12px; font-size: 13px;">Annuler</button>
+    <button id="btn-alpaca-save" type="button" style="padding: 7px 16px; font-size: 13px;">Enregistrer</button>
+  </div>
+</dialog>
+
 <script>
 "use strict";
 
@@ -187,7 +213,7 @@ const livePrices = {};
 let liveActive = false;
 let liveInterval = null;
 let quotePollInterval = null;
-let finnhubWs = null;
+let alpacaWs = null;
 
 function setStatus(text, bad) {
   const el = $("#status");
@@ -398,42 +424,68 @@ async function pollQuotesOnce() {
     }
   }
   if (updatedAny) {
-    $("#live-status-note").textContent = "Cotations : calcul en direct actualisé.";
+    if (!alpacaWs) {
+      $("#live-status-note").textContent = "Cotations : calcul en direct actualisé.";
+    }
     recalculateAndRenderPositions();
   }
 }
 
-function initFinnhubWs(symbols) {
-  if (finnhubWs) {
-    try { finnhubWs.close(); } catch (_) {}
-    finnhubWs = null;
+function connectAlpacaWs(symbols) {
+  if (alpacaWs) {
+    try { alpacaWs.close(); } catch (_) {}
+    alpacaWs = null;
   }
-  const token = localStorage.getItem("finnhub_token");
-  if (!token || !symbols || !symbols.length) return;
+  const key = (localStorage.getItem("alpaca_key") || "").trim();
+  const secret = (localStorage.getItem("alpaca_secret") || "").trim();
+  if (!key || !secret || !symbols || !symbols.length) return false;
+
   try {
-    const ws = new WebSocket(`wss://ws.finnhub.io?token=${encodeURIComponent(token)}`);
-    finnhubWs = ws;
-    ws.onopen = () => {
-      symbols.forEach((s) => ws.send(JSON.stringify({ type: "subscribe", symbol: s })));
-      $("#live-status-note").textContent = "Cotations : flux continu Finnhub actif.";
-    };
+    const ws = new WebSocket("wss://stream.data.alpaca.markets/v2/iex");
+    alpacaWs = ws;
     ws.onmessage = (event) => {
       try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "trade" && Array.isArray(msg.data)) {
-          let hasChange = false;
-          msg.data.forEach((t) => {
-            if (t.s && typeof t.p === "number" && t.p > 0) {
-              livePrices[t.s] = t.p;
-              hasChange = true;
+        const msgs = JSON.parse(event.data);
+        if (!Array.isArray(msgs)) return;
+        for (const m of msgs) {
+          if (m.T === "success" && m.msg === "connected") {
+            ws.send(JSON.stringify({
+              action: "auth",
+              key: key,
+              secret: secret
+            }));
+          } else if (m.T === "success" && m.msg === "authenticated") {
+            ws.send(JSON.stringify({
+              action: "subscribe",
+              trades: symbols,
+              quotes: symbols
+            }));
+            $("#live-status-note").textContent = "Cotations : flux Alpaca connecté en direct.";
+          } else if (m.T === "t" && m.S && typeof m.p === "number" && m.p > 0) {
+            livePrices[m.S] = m.p;
+            recalculateAndRenderPositions();
+          } else if (m.T === "q" && m.S) {
+            const mid = (m.bp && m.ap) ? (m.bp + m.ap) / 2 : (m.ap || m.bp);
+            if (typeof mid === "number" && mid > 0) {
+              livePrices[m.S] = mid;
+              recalculateAndRenderPositions();
             }
-          });
-          if (hasChange) recalculateAndRenderPositions();
+          } else if (m.T === "error") {
+            $("#live-status-note").textContent = "Alpaca : erreur " + (m.msg || m.code);
+          }
         }
       } catch (_) {}
     };
-    ws.onclose = () => { finnhubWs = null; };
-  } catch (_) {}
+    ws.onerror = () => {
+      $("#live-status-note").textContent = "Alpaca : connexion directe interrompue, repli actif.";
+    };
+    ws.onclose = () => {
+      alpacaWs = null;
+    };
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 function setLive(active) {
@@ -447,10 +499,10 @@ function setLive(active) {
     $("#live-status-note").textContent = "Cotations : recherche des cours en cours…";
 
     const symbols = (currentReport && currentReport.positions ? currentReport.positions.map((p) => p.symbol) : []);
-    initFinnhubWs(symbols);
+    const connected = connectAlpacaWs(symbols);
     pollQuotesOnce();
 
-    if (!quotePollInterval) {
+    if (!quotePollInterval && !connected) {
       quotePollInterval = setInterval(pollQuotesOnce, 4000);
     }
     if (!liveInterval) {
@@ -468,9 +520,9 @@ function setLive(active) {
       clearInterval(liveInterval);
       liveInterval = null;
     }
-    if (finnhubWs) {
-      try { finnhubWs.close(); } catch (_) {}
-      finnhubWs = null;
+    if (alpacaWs) {
+      try { alpacaWs.close(); } catch (_) {}
+      alpacaWs = null;
     }
   }
 }
@@ -479,22 +531,43 @@ $("#toggle-live").addEventListener("click", () => {
   setLive(!$("#toggle-live").classList.contains("active"));
 });
 
-$("#link-finnhub").addEventListener("click", (e) => {
-  e.preventDefault();
-  const current = localStorage.getItem("finnhub_token") || "";
-  const token = prompt("Entrez une clé d'API Finnhub gratuite (sur finnhub.io) pour recevoir les cotations en continu instantané par WebSocket :", current);
-  if (token !== null) {
-    const trimmed = token.trim();
-    if (trimmed) {
-      localStorage.setItem("finnhub_token", trimmed);
-    } else {
-      localStorage.removeItem("finnhub_token");
-    }
+const modalAlpaca = $("#modal-alpaca");
+$("#btn-open-alpaca").addEventListener("click", () => {
+  $("#input-alpaca-key").value = localStorage.getItem("alpaca_key") || "";
+  $("#input-alpaca-secret").value = localStorage.getItem("alpaca_secret") || "";
+  modalAlpaca.showModal();
+});
+
+$("#btn-alpaca-close").addEventListener("click", () => {
+  modalAlpaca.close();
+});
+
+$("#btn-alpaca-clear").addEventListener("click", () => {
+  localStorage.removeItem("alpaca_key");
+  localStorage.removeItem("alpaca_secret");
+  $("#input-alpaca-key").value = "";
+  $("#input-alpaca-secret").value = "";
+  if (alpacaWs) {
+    try { alpacaWs.close(); } catch (_) {}
+    alpacaWs = null;
+  }
+  $("#live-status-note").textContent = "Cotations : identifiants Alpaca supprimés.";
+  modalAlpaca.close();
+});
+
+$("#btn-alpaca-save").addEventListener("click", () => {
+  const key = $("#input-alpaca-key").value.trim();
+  const secret = $("#input-alpaca-secret").value.trim();
+  if (key && secret) {
+    localStorage.setItem("alpaca_key", key);
+    localStorage.setItem("alpaca_secret", secret);
+    $("#live-status-note").textContent = "Cotations : identifiants Alpaca enregistrés.";
     if (liveActive) {
       const symbols = (currentReport && currentReport.positions ? currentReport.positions.map((p) => p.symbol) : []);
-      initFinnhubWs(symbols);
+      connectAlpacaWs(symbols);
     }
   }
+  modalAlpaca.close();
 });
 
 $("#btn-refresh").addEventListener("click", load);
