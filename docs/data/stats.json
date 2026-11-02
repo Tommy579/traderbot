@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-02T08:07:49.142604+00:00",
+ "updated_at": "2026-11-02T08:07:50.721280+00:00",
  "entries": [
   {
    "received_at": "2026-11-01T18:20:13.345127+00:00",
@@ -71,6 +71,23 @@
     "orders": [],
     "halts": [],
     "errors": []
+   }
+  },
+  {
+   "received_at": "2026-11-02T08:07:50.721242+00:00",
+   "event": "cycle_trading",
+   "report": {
+    "timestamp": "2026-10-31T15:11:33.926995+00:00",
+    "session_date": "2026-10-31",
+    "skipped": true,
+    "skip_reason": "marché fermé",
+    "equity": 0.0,
+    "signals": {},
+    "decisions": [],
+    "orders": [],
+    "halts": [],
+    "errors": [],
+    "dry_run": true
    }
   }
  ]
