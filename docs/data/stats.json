@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-02T08:09:00.648784+00:00",
+ "updated_at": "2026-11-02T08:09:02.138477+00:00",
  "entries": [
   {
    "received_at": "2026-11-01T18:20:13.345127+00:00",
@@ -127,6 +127,23 @@
     "cash": 100000.0,
     "positions_count": 0,
     "unrealized_pnl": 0.0
+   }
+  },
+  {
+   "received_at": "2026-11-02T08:09:02.138441+00:00",
+   "event": "cycle_trading",
+   "report": {
+    "timestamp": "2026-10-31T15:11:33.926995+00:00",
+    "session_date": "2026-10-31",
+    "skipped": true,
+    "skip_reason": "marché fermé",
+    "equity": 0.0,
+    "signals": {},
+    "decisions": [],
+    "orders": [],
+    "halts": [],
+    "errors": [],
+    "dry_run": true
    }
   }
  ]
