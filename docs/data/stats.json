@@ -1,132 +1,94 @@
 {
-  "updated_at": "2026-11-02T15:15:16.030401+00:00",
-  "entries": [
-    {
-      "received_at": "2026-11-02T08:09:00.648728+00:00",
-      "event": "cycle_trading",
-      "report": {
-        "timestamp": "2026-10-30T19:55:08.072249+00:00",
-        "session_date": "2026-10-30",
-        "skipped": false,
-        "skip_reason": null,
-        "equity": 100000.0,
-        "signals": {
-          "AAPL": "HOLD",
-          "MSFT": "HOLD"
-        },
-        "decisions": [],
-        "orders": [],
-        "halts": [],
-        "errors": [],
-        "cash": 100000.0,
-        "positions_count": 0,
-        "unrealized_pnl": 0.0
-      }
+ "updated_at": "2026-11-02T15:42:50.814433+00:00",
+ "entries": [
+  {
+   "received_at": "2026-11-02T08:09:00.648728+00:00",
+   "event": "cycle_trading",
+   "report": {
+    "timestamp": "2026-10-30T19:55:08.072249+00:00",
+    "session_date": "2026-10-30",
+    "skipped": false,
+    "skip_reason": null,
+    "equity": 100000.0,
+    "signals": {
+     "AAPL": "HOLD",
+     "MSFT": "HOLD"
     },
-    {
-      "received_at": "2026-11-02T08:09:02.138441+00:00",
-      "event": "cycle_trading",
-      "report": {
-        "timestamp": "2026-10-31T15:11:33.926995+00:00",
-        "session_date": "2026-10-31",
-        "skipped": true,
-        "skip_reason": "marché fermé",
-        "equity": 0.0,
-        "signals": {},
-        "decisions": [],
-        "orders": [],
-        "halts": [],
-        "errors": [],
-        "dry_run": true
-      }
+    "decisions": [],
+    "orders": [],
+    "halts": [],
+    "errors": [],
+    "cash": 100000.0,
+    "positions_count": 0,
+    "unrealized_pnl": 0.0
+   }
+  },
+  {
+   "received_at": "2026-11-02T08:09:02.138441+00:00",
+   "event": "cycle_trading",
+   "report": {
+    "timestamp": "2026-10-31T15:11:33.926995+00:00",
+    "session_date": "2026-10-31",
+    "skipped": true,
+    "skip_reason": "marché fermé",
+    "equity": 0.0,
+    "signals": {},
+    "decisions": [],
+    "orders": [],
+    "halts": [],
+    "errors": [],
+    "dry_run": true
+   }
+  },
+  {
+   "received_at": "2026-11-02T08:09:04.606402+00:00",
+   "event": "cycle_trading",
+   "report": {
+    "timestamp": "2026-11-01T23:36:46.844461+00:00",
+    "session_date": "2026-11-01",
+    "skipped": true,
+    "skip_reason": "marché fermé (week-end) — réouverture lundi 02/11 à 09:30 (EST)",
+    "equity": 0.0,
+    "signals": {},
+    "decisions": [],
+    "orders": [],
+    "halts": [],
+    "errors": [],
+    "dry_run": true
+   }
+  },
+  {
+   "received_at": "2026-11-02T15:42:50.814395+00:00",
+   "event": "cycle_trading",
+   "report": {
+    "timestamp": "2026-11-02T15:42:39.212503+00:00",
+    "session_date": "2026-11-02",
+    "skipped": false,
+    "skip_reason": null,
+    "equity": 100301.30380400001,
+    "cash": 26139.05,
+    "positions_count": 4,
+    "unrealized_pnl": 301.31096027120213,
+    "signals": {
+     "AMD": "HOLD",
+     "AMZN": "HOLD",
+     "AVGO": "HOLD",
+     "COST": "HOLD",
+     "JPM": "HOLD",
+     "LLY": "HOLD",
+     "META": "HOLD",
+     "MSFT": "HOLD",
+     "NEE": "HOLD",
+     "NVDA": "HOLD",
+     "PLTR": "HOLD",
+     "TSM": "SELL",
+     "XOM": "HOLD"
     },
-    {
-      "received_at": "2026-11-02T08:09:04.606402+00:00",
-      "event": "cycle_trading",
-      "report": {
-        "timestamp": "2026-11-01T23:36:46.844461+00:00",
-        "session_date": "2026-11-01",
-        "skipped": true,
-        "skip_reason": "marché fermé (week-end) — réouverture lundi 02/11 à 09:30 (EST)",
-        "equity": 0.0,
-        "signals": {},
-        "decisions": [],
-        "orders": [],
-        "halts": [],
-        "errors": [],
-        "dry_run": true
-      }
-    },
-    {
-      "received_at": "2026-11-02T15:15:16.030329+00:00",
-      "event": "cycle_trading",
-      "report": {
-        "timestamp": "2026-11-02T15:15:03.440533+00:00",
-        "session_date": "2026-11-02",
-        "skipped": false,
-        "skip_reason": null,
-        "equity": 100419.69,
-        "cash": 26139.05,
-        "positions_count": 4,
-        "unrealized_pnl": 420.97,
-        "signals": {
-          "AMD": "HOLD",
-          "AMZN": "SELL",
-          "AVGO": "SELL",
-          "COST": "HOLD",
-          "JPM": "SELL",
-          "LLY": "BUY",
-          "META": "HOLD",
-          "MSFT": "BUY",
-          "NEE": "SELL",
-          "NVDA": "SELL",
-          "PLTR": "BUY",
-          "TSM": "SELL",
-          "XOM": "BUY"
-        },
-        "decisions": [],
-        "orders": [],
-        "halts": [],
-        "errors": [],
-        "positions": [
-          {
-            "symbol": "LLY",
-            "qty": 11.529,
-            "avg_entry_price": 1407.75,
-            "current_price": 1407.55,
-            "stop_price": 1319.85,
-            "market_value": 16227.64,
-            "unrealized_pnl": -2.31
-          },
-          {
-            "symbol": "MSFT",
-            "qty": 42.8096,
-            "avg_entry_price": 525.668198,
-            "current_price": 528.47,
-            "stop_price": 502.42,
-            "market_value": 22623.59,
-            "unrealized_pnl": 119.94
-          },
-          {
-            "symbol": "PLTR",
-            "qty": 62.9349,
-            "avg_entry_price": 184.33572,
-            "current_price": 187.035,
-            "stop_price": 168.8,
-            "market_value": 11771.03,
-            "unrealized_pnl": 169.88
-          },
-          {
-            "symbol": "XOM",
-            "qty": 128.946,
-            "avg_entry_price": 182.45,
-            "current_price": 183.485,
-            "stop_price": 174.6,
-            "market_value": 23659.66,
-            "unrealized_pnl": 133.46
-          }
-        ]
-      }
-    }
-  ]
+    "decisions": [],
+    "orders": [],
+    "halts": [],
+    "errors": []
+   }
+  }
+ ]
 }
