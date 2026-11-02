@@ -135,6 +135,10 @@
       <div class="tile"><div class="label">Actions détenues</div><div class="value" id="acc-count">—</div></div>
       <div class="tile"><div class="label">Gains / pertes latents</div><div class="value" id="acc-pnl">—</div></div>
     </div>
+    <div class="small" style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+      <span id="live-status-note">Cotations : dernier cours enregistré.</span>
+      <button id="btn-open-alpaca" type="button" style="padding: 4px 10px; font-size: 12.5px; border-radius: 6px; background: transparent; border: 1px solid var(--border); color: var(--accent); cursor: pointer;">Identifiants Alpaca (direct)</button>
+    </div>
     <div id="positions-wrap" style="margin-top: 14px; display: none;">
       <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px;">Détail des positions en portefeuille</div>
       <div style="overflow-x: auto;">
@@ -152,10 +156,6 @@
           </thead>
           <tbody id="positions-tbody"></tbody>
         </table>
-      </div>
-      <div class="small" style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-        <span id="live-status-note">Cotations : dernier cours enregistré.</span>
-        <button id="btn-open-alpaca" type="button" style="padding: 4px 10px; font-size: 12.5px; border-radius: 6px; background: transparent; border: 1px solid var(--border); color: var(--accent); cursor: pointer;">Identifiants Alpaca (direct)</button>
       </div>
     </div>
   </div>
@@ -262,11 +262,12 @@ function recalculateAndRenderPositions() {
 
   if (!positions.length) {
     wrap.style.display = "none";
-    $("#acc-equity").textContent = money(cash);
+    $("#acc-equity").textContent = money(currentReport.equity != null ? currentReport.equity : cash);
     $("#acc-cash").textContent = money(cash);
-    $("#acc-count").textContent = "0";
-    $("#acc-pnl").textContent = money(0);
-    $("#acc-pnl").className = "value";
+    $("#acc-count").textContent = String(currentReport.positions_count ?? 0);
+    const fallbackPnl = currentReport.unrealized_pnl || 0;
+    $("#acc-pnl").textContent = (fallbackPnl > 0 ? "+" : "") + money(fallbackPnl);
+    $("#acc-pnl").className = "value " + cls(fallbackPnl);
     return;
   }
 
