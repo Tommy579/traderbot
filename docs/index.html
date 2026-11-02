@@ -488,16 +488,28 @@ function connectAlpacaWs(symbols) {
           } else if (m.T === "t" && m.S && typeof m.p === "number" && m.p > 0) {
             recordLivePrice(m.S, m.p);
           } else if (m.T === "error") {
-            $("#live-status-note").textContent = "Alpaca : erreur " + (m.msg || m.code);
+            const isLimit = (m.code === 406 || String(m.msg).includes("limit"));
+            $("#live-status-note").textContent = isLimit
+              ? "Alpaca : 1 seule connexion simultanée autorisée (déjà actif sur un autre appareil). Repli sur cotations de marché."
+              : ("Alpaca : " + (m.msg || m.code) + ". Repli sur cotations de marché.");
+            if (!quotePollInterval) {
+              quotePollInterval = setInterval(pollQuotesOnce, 3000);
+            }
           }
         }
       } catch (_) {}
     };
     ws.onerror = () => {
-      $("#live-status-note").textContent = "Alpaca : connexion directe interrompue, repli actif.";
+      $("#live-status-note").textContent = "Alpaca : flux interrompu, repli sur cotations de marché.";
+      if (!quotePollInterval) {
+        quotePollInterval = setInterval(pollQuotesOnce, 3000);
+      }
     };
     ws.onclose = () => {
       alpacaWs = null;
+      if (liveActive && !quotePollInterval) {
+        quotePollInterval = setInterval(pollQuotesOnce, 3000);
+      }
     };
     return true;
   } catch (e) {
