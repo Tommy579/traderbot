@@ -289,6 +289,14 @@
         <button class="secondary" id="btn-history-refresh">Rafraîchir l'historique</button>
       </div>
     </div>
+    <div class="card" id="history-chart-card" style="display:none">
+      <h2>Évolution de la valeur du compte</h2>
+      <p class="hint">Survolez la courbe : date, valeur, et variation par rapport au départ.</p>
+      <div class="chart-wrap" id="history-chart-wrap">
+        <div class="chart-tip" id="history-chart-tip"></div>
+        <div id="history-svg"></div>
+      </div>
+    </div>
     <div id="history-list"></div>
   </section>
 
@@ -665,6 +673,7 @@ async function loadHistory(force) {
 }
 
 function renderHistory(entries) {
+  drawHistoryChart(entries);
   const el = $("#history-list");
   el.dataset.loaded = "1";
   if (!entries.length) {
@@ -730,6 +739,110 @@ function renderHistory(entries) {
       ${lines.join("")}
     </div>`;
   }).join("");
+}
+
+function drawHistoryChart(entries) {
+  const wrap = $("#history-svg");
+  const card = $("#history-chart-card");
+  const tip = $("#history-chart-tip");
+  if (!wrap || !card || !tip) return;
+
+  if (!entries || !entries.length) {
+    card.style.display = "none";
+    return;
+  }
+
+  const sorted = entries.slice().sort((a, b) => (a.session_date || "").localeCompare(b.session_date || ""));
+
+  let lastEquity = 100000;
+  const points = [];
+  for (const e of sorted) {
+    if (e.equity && e.equity > 0) {
+      lastEquity = e.equity;
+    }
+    if (e.session_date) {
+      points.push({ date: e.session_date, equity: lastEquity });
+    }
+  }
+
+  if (!points.length) {
+    card.style.display = "none";
+    return;
+  }
+
+  if (points.length === 1) {
+    const d = new Date(points[0].date + "T00:00:00");
+    d.setDate(d.getDate() - 1);
+    points.unshift({ date: d.toISOString().split("T")[0], equity: 100000 });
+  }
+
+  card.style.display = "block";
+  const initial = points[0].equity || 100000;
+
+  const W = 760, H = 260, padL = 62, padR = 16, padT = 14, padB = 30;
+  const values = points.map(p => p.equity);
+  let vmin = Math.min(...values, initial), vmax = Math.max(...values, initial);
+  const span = vmax - vmin || 100;
+  vmin -= span * 0.08; vmax += span * 0.08;
+
+  const x = i => padL + (i / (points.length - 1)) * (W - padL - padR);
+  const y = v => padT + (1 - (v - vmin) / (vmax - vmin)) * (H - padT - padB);
+  const path = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.equity).toFixed(1)}`).join("");
+
+  const gridY = [0, 0.25, 0.5, 0.75, 1].map(f => {
+    const gy = padT + f * (H - padT - padB), gv = vmax - f * (vmax - vmin);
+    return `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="var(--card-border)" stroke-width="1"/>
+      <text x="${padL - 8}" y="${gy + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${money(gv)}</text>`;
+  }).join("");
+
+  const step = Math.max(1, Math.floor(points.length / 6));
+  const dates = points.map((p, i) => {
+    if (i % step !== 0 && i !== points.length - 1) return "";
+    const dt = new Date(p.date + "T00:00:00");
+    const label = dt.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+    return `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${label}</text>`;
+  }).join("");
+  const baseY = y(initial);
+
+  wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
+    ${gridY}${dates}
+    <line x1="${padL}" y1="${baseY}" x2="${W - padR}" y2="${baseY}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 4" opacity="0.7"/>
+    <text x="${W - padR}" y="${baseY - 5}" text-anchor="end" font-size="10.5" fill="var(--muted)">départ ${money(initial)}</text>
+    <path d="${path}" fill="none" stroke="var(--series-1)" stroke-width="2.5" stroke-linejoin="round"/>
+    <line id="hist-cross" x1="0" y1="${padT}" x2="0" y2="${H - padB}" stroke="var(--muted)" stroke-width="1" visibility="hidden"/>
+    <circle id="hist-dot" r="4.5" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" visibility="hidden"/>
+  </svg>`;
+
+  const svg = wrap.querySelector("svg");
+  function onMove(clientX) {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return;
+    const fx = ((clientX - rect.left) / rect.width) * W;
+    const i = Math.round(Math.min(points.length - 1, Math.max(0, ((fx - padL) / (W - padL - padR)) * (points.length - 1))));
+    const p = points[i];
+    if (!p) return;
+    const cross = svg.querySelector("#hist-cross"), dot = svg.querySelector("#hist-dot");
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(p.equity)); dot.setAttribute("visibility", "visible");
+    tip.style.display = "block";
+    const diff = p.equity - initial;
+    const pctDiff = initial > 0 ? (diff / initial) : 0;
+    tip.innerHTML = `<b>${frDate(p.date)}</b><br>Valeur : ${money2(p.equity)}<br>Évolution : ${(diff >= 0 ? "+" : "") + money2(diff)} (${pct(pctDiff)})`;
+    const px = (x(i) / W) * rect.width;
+    tip.style.left = Math.min(px + 12, Math.max(8, rect.width - 200)) + "px";
+    tip.style.top = "6px";
+  }
+  function onLeave() {
+    tip.style.display = "none";
+    const cross = svg.querySelector("#hist-cross"), dot = svg.querySelector("#hist-dot");
+    if (cross) cross.setAttribute("visibility", "hidden");
+    if (dot) dot.setAttribute("visibility", "hidden");
+  }
+  svg.addEventListener("mousemove", ev => onMove(ev.clientX));
+  svg.addEventListener("mouseleave", onLeave);
+  svg.addEventListener("touchstart", ev => {
+    if (ev.touches && ev.touches.length > 0) onMove(ev.touches[0].clientX);
+  });
 }
 
 $("#btn-history-refresh").addEventListener("click", () => loadHistory(true));
