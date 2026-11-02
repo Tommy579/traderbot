@@ -81,6 +81,16 @@
   </div>
 </header>
 <main>
+  <div class="card" id="account-card" style="display:none">
+    <h2>État du compte d'entraînement</h2>
+    <div class="small" id="account-hint">Valeurs du dernier cycle exécuté (en dollars fictifs).</div>
+    <div class="tiles">
+      <div class="tile"><div class="label">Valeur totale</div><div class="value" id="acc-equity">—</div></div>
+      <div class="tile"><div class="label">Cash disponible</div><div class="value" id="acc-cash">—</div></div>
+      <div class="tile"><div class="label">Actions détenues</div><div class="value" id="acc-count">—</div></div>
+      <div class="tile"><div class="label">Gains / pertes latents</div><div class="value" id="acc-pnl">—</div></div>
+    </div>
+  </div>
   <div class="card" id="status-card">
     <div class="small" id="status">Chargement…</div>
     <div style="margin-top:10px"><button id="btn-refresh">Rafraîchir</button></div>
@@ -121,7 +131,39 @@ function setStatus(text, bad) {
   el.className = bad ? "small err" : "small";
 }
 
+function updateAccountCard(entries) {
+  const card = $("#account-card");
+  if (!entries || !entries.length) {
+    card.style.display = "none";
+    return;
+  }
+  // Cherche le cycle le plus récent ayant des données de compte (exécuté ou non sauté)
+  const latestWithData = entries.slice().reverse().find(e => {
+    const rep = e.report || {};
+    return !rep.skipped && (rep.cash != null || rep.equity != null);
+  }) || entries[entries.length - 1];
+
+  const r = (latestWithData && latestWithData.report) || {};
+  if (r.equity == null && r.cash == null) {
+    card.style.display = "none";
+    return;
+  }
+
+  card.style.display = "block";
+  const pnl = r.unrealized_pnl || 0;
+  $("#acc-equity").textContent = money(r.equity);
+  $("#acc-cash").textContent = money(r.cash != null ? r.cash : r.equity);
+  $("#acc-count").textContent = r.positions_count ?? 0;
+  const pnlEl = $("#acc-pnl");
+  pnlEl.textContent = (pnl > 0 ? "+" : "") + money(pnl);
+  pnlEl.className = "value " + cls(pnl);
+  if (r.session_date) {
+    $("#account-hint").textContent = "Dernier cycle exécuté le " + frDate(r.session_date) + " (valeurs en dollars fictifs).";
+  }
+}
+
 function render(entries) {
+  updateAccountCard(entries);
   const list = $("#list");
   if (!entries.length) {
     list.innerHTML = `<div class="card"><p class="small">Aucun cycle reçu pour l'instant.
@@ -149,18 +191,7 @@ function render(entries) {
       lines.push(`<p class="small">Le robot s'est réveillé mais n'a rien fait :
         ${esc(r.skip_reason || "séance non ouverte")}.</p>`);
     } else {
-      const hasAccountDetails = r.cash != null || r.positions_count != null || r.unrealized_pnl != null;
-      if (hasAccountDetails) {
-        const pnl = r.unrealized_pnl || 0;
-        lines.push(`<div class="tiles">
-          <div class="tile"><div class="label">Valeur totale</div><div class="value">${money(r.equity)}</div></div>
-          <div class="tile"><div class="label">Cash disponible</div><div class="value">${money(r.cash)}</div></div>
-          <div class="tile"><div class="label">Actions détenues</div><div class="value">${r.positions_count ?? 0}</div></div>
-          <div class="tile"><div class="label">Gains / pertes</div><div class="value ${cls(pnl)}">${(pnl > 0 ? "+" : "") + money(pnl)}</div></div>
-        </div>`);
-      } else {
-        lines.push(`<p class="small">Valeur du compte : <b>${money(r.equity)}</b></p>`);
-      }
+      lines.push(`<p class="small">Valeur du compte : <b>${money(r.equity)}</b></p>`);
       if (signals.length) {
         lines.push(`<p class="small">${signals.map(([s, a]) =>
           `<span class="badge ${a === "BUY" ? "buy" : a === "SELL" ? "sell" : "hold"}">${esc(s)} ${esc(a)}</span>`
