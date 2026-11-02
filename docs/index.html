@@ -482,17 +482,11 @@ function connectAlpacaWs(symbols) {
           } else if (m.T === "success" && m.msg === "authenticated") {
             ws.send(JSON.stringify({
               action: "subscribe",
-              trades: symbols,
-              quotes: symbols
+              trades: symbols
             }));
-            $("#live-status-note").textContent = "Cotations : flux Alpaca connecté (actualisation chaque seconde).";
+            $("#live-status-note").textContent = "Cotations : flux Alpaca connecté (cours réels négociés).";
           } else if (m.T === "t" && m.S && typeof m.p === "number" && m.p > 0) {
             recordLivePrice(m.S, m.p);
-          } else if (m.T === "q" && m.S) {
-            const mid = (m.bp && m.ap) ? (m.bp + m.ap) / 2 : (m.ap || m.bp);
-            if (typeof mid === "number" && mid > 0) {
-              recordLivePrice(m.S, mid);
-            }
           } else if (m.T === "error") {
             $("#live-status-note").textContent = "Alpaca : erreur " + (m.msg || m.code);
           }
