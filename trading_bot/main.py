@@ -1468,6 +1468,30 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_news_row(
+    symbol: str,
+    assessment: NewsAssessment,
+    *,
+    veto: float,
+    panic: float,
+    engine: RiskEngine,
+) -> str:
+    """Met en forme une ligne du radar d'actualités."""
+    if assessment.is_critical_threat and assessment.sentiment_score <= panic:
+        effect = "SORTIE URGENCE"
+    elif engine.news_vetoes_entry(assessment):
+        effect = "VETO ENTRÉE"
+    else:
+        effect = "—"
+    rationale = " ".join(assessment.rationale.split())
+    return (
+        f"{symbol:<9}{assessment.sentiment_score:>+8.2f}"
+        f"{assessment.confidence:>8.2f}"
+        f"{'oui' if assessment.is_critical_threat else 'non':>9}"
+        f"{assessment.articles_count:>5}  {effect:<15}{rationale[:44]}"
+    )
+
+
 def cmd_news(args: argparse.Namespace) -> int:
     """Commande ``news`` : radar de sentiment sur les actualités récentes.
 
@@ -1490,38 +1514,41 @@ def cmd_news(args: argparse.Namespace) -> int:
     panic = settings.risk.news_panic_exit_threshold
     engine = RiskEngine(settings.risk)
 
+    # Tout est écrit avec flush : un appel au modèle prend plusieurs secondes
+    # et l'absence de retour immédiat donne l'impression que rien ne se passe.
     print(
         f"Radar d'actualités | fenêtre {settings.news_lookback_hours} h | "
-        f"modèle {settings.openrouter_model}"
+        f"modèle {settings.openrouter_model}",
+        flush=True,
     )
-    print(f"seuils : veto d'entrée ≤ {veto:+.2f} | sortie d'urgence ≤ {panic:+.2f}\n")
-
-    assessments = analyzer.assess(symbols, now=datetime.now(UTC))
+    print(
+        f"seuils : veto d'entrée ≤ {veto:+.2f} | sortie d'urgence ≤ {panic:+.2f}",
+        flush=True,
+    )
+    print(
+        f"{len(symbols)} symbole(s). Un appel au modèle par symbole ayant des "
+        "articles inédits ; les autres sont servis par le cache.",
+        flush=True,
+    )
 
     header = (
         f"{'Symbole':<9}{'Score':>8}{'Conf.':>8}{'Critique':>9}"
         f"{'Art.':>5}  {'Effet':<15}Motif"
     )
-    print(header)
-    print("-" * 78)
-    for symbol in symbols:
-        assessment = assessments.get(symbol)
-        if assessment is None:
-            print(f"{symbol:<9}{'—':>8}")
-            continue
-        if assessment.is_critical_threat and assessment.sentiment_score <= panic:
-            effect = "SORTIE URGENCE"
-        elif engine.news_vetoes_entry(assessment):
-            effect = "VETO ENTRÉE"
-        else:
-            effect = "—"
-        rationale = " ".join(assessment.rationale.split())
+    print(header, flush=True)
+    print("-" * 78, flush=True)
+
+    def emit(symbol: str, assessment: NewsAssessment) -> None:
+        """Affiche une ligne sitôt calculée, sans attendre les suivantes."""
         print(
-            f"{symbol:<9}{assessment.sentiment_score:>+8.2f}"
-            f"{assessment.confidence:>8.2f}"
-            f"{'oui' if assessment.is_critical_threat else 'non':>9}"
-            f"{assessment.articles_count:>5}  {effect:<15}{rationale[:44]}"
+            _format_news_row(
+                symbol, assessment, veto=veto, panic=panic, engine=engine
+            ),
+            flush=True,
         )
+
+    analyzer.assess(symbols, now=datetime.now(UTC), on_progress=emit)
+
     if not analyzer.llm_enabled:
         print("\n(Attention : aucune clé OpenRouter, les scores sont neutres.)")
     return 0

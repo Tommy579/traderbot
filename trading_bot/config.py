@@ -332,8 +332,12 @@ class Settings(BaseSettings):
         ),
     )
     openrouter_model: str = Field(
-        "google/gemini-3.8-flash",
-        description="Modèle OpenRouter, retenu pour son coût et sa latence.",
+        "deepseek/deepseek-v4.1-flash-1017",
+        description=(
+            "Modèle OpenRouter, retenu pour son coût : ~0.10 centime par appel "
+            "observé, contre ~0.34 pour google/gemini-3.8-flash. Le préfixe du "
+            "fournisseur est obligatoire, sous peine d'identifiant introuvable."
+        ),
     )
     news_lookback_hours: int = Field(
         24, ge=1, le=168, description="Fenêtre d'actualités analysée, en heures."

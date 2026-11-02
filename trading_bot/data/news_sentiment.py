@@ -29,7 +29,7 @@ import math
 import os
 import urllib.error
 import urllib.request
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -567,13 +567,21 @@ class NewsSentimentAnalyzer:
     # Point d'entrée
     # ------------------------------------------------------------------
     def assess(
-        self, symbols: Iterable[str], *, now: datetime | None = None
+        self,
+        symbols: Iterable[str],
+        *,
+        now: datetime | None = None,
+        on_progress: Callable[[str, NewsAssessment], None] | None = None,
     ) -> dict[str, NewsAssessment]:
         """Note chaque symbole, en ne payant que pour les actualités neuves.
 
         Args:
             symbols: Symboles à évaluer.
             now: Horodatage de référence (injection pour les tests).
+            on_progress: Rappel invoqué après chaque symbole, avec son verdict.
+                Un appel au modèle prend plusieurs secondes : sans cela, un
+                affichage ne peut rien montrer avant la fin et l'utilisateur
+                croit à un blocage.
 
         Returns:
             Un verdict par symbole. Un symbole dont les articles ont déjà tous
@@ -597,14 +605,19 @@ class NewsSentimentAnalyzer:
                     now=moment,
                     rationale="aucune actualité récente",
                 )
-                continue
-            assessment, analysed = self._ask_model(symbol, unseen, now=moment)
-            results[symbol] = assessment
-            if analysed:
-                # Seul un article réellement noté entre au registre. Une note
-                # neutre d'origine « clé absente » ou « panne » ne doit pas
-                # faire croire que l'article a été traité.
-                fresh_ids.extend(article.article_id for article in unseen)
+            else:
+                assessment, analysed = self._ask_model(symbol, unseen, now=moment)
+                results[symbol] = assessment
+                if analysed:
+                    # Seul un article réellement noté entre au registre. Une
+                    # note neutre d'origine « clé absente » ou « panne » ne doit
+                    # pas faire croire que l'article a été traité.
+                    fresh_ids.extend(article.article_id for article in unseen)
+            if on_progress is not None:
+                # Un appel au modèle dure plusieurs secondes : l'appelant doit
+                # pouvoir afficher chaque ligne au fur et à mesure plutôt que
+                # de laisser l'utilisateur devant un terminal figé.
+                on_progress(symbol, results[symbol])
 
         # Fusion avec les verdicts déjà connus : un passage partiel (par
         # exemple « news --symbols NVDA ») ne doit pas effacer les notes des

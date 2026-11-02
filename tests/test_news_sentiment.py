@@ -35,7 +35,7 @@ from trading_bot.risk.engine import (
 
 NOW = datetime(2024, 1, 10, 15, 0, tzinfo=UTC)
 SESSION = date(2024, 1, 10)
-MODEL = "google/gemini-3.8-flash"
+MODEL = "deepseek/deepseek-v4.1-flash-1017"
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +520,38 @@ def test_a_partial_run_does_not_erase_other_verdicts(tmp_path: Path) -> None:
     assert set(stored["assessments"]) == {"NVDA", "AMD"}
     assert stored["assessments"]["AMD"]["confidence"] > 0
     assert stored["assessments"]["AMD"]["rationale"] != "aucune actualité récente"
+
+
+def test_progress_callback_fires_for_every_symbol(tmp_path: Path) -> None:
+    """Le rappel de progression est appelé par symbole, y compris depuis le cache.
+
+    C'est ce qui permet au radar CLI d'afficher ses lignes au fur et à mesure
+    au lieu de laisser un terminal figé pendant toute la durée des appels.
+    """
+    seen: list[tuple[str, float]] = []
+    analyzer = make_analyzer(
+        tmp_path, articles={"NVDA": [make_article(1)], "AMD": [make_article(2)]}
+    )
+    analyzer.assess(
+        ["NVDA", "AMD"],
+        now=NOW,
+        on_progress=lambda symbol, assessment: seen.append(
+            (symbol, assessment.sentiment_score)
+        ),
+    )
+    assert [symbol for symbol, _ in seen] == ["NVDA", "AMD"]
+
+    # Second passage, entièrement servi par le cache : le rappel doit encore
+    # se déclencher, sinon l'affichage resterait vide malgré un résultat.
+    seen.clear()
+    analyzer.assess(
+        ["NVDA"],
+        now=NOW + timedelta(minutes=5),
+        on_progress=lambda symbol, assessment: seen.append(
+            (symbol, assessment.sentiment_score)
+        ),
+    )
+    assert [symbol for symbol, _ in seen] == ["NVDA"]
 
 
 def test_no_article_means_no_model_call(tmp_path: Path) -> None:
