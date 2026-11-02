@@ -345,7 +345,8 @@ function render(entries) {
       Le bot envoie ses stats à la fin de chaque cycle.</p></div>`;
     return;
   }
-  list.innerHTML = entries.map((entry) => {
+  const orderedEntries = entries.slice().reverse();
+  list.innerHTML = orderedEntries.map((entry) => {
     const r = entry.report || {};
     const badges = [];
     if (r.skipped) {
@@ -596,7 +597,9 @@ $("#btn-alpaca-save").addEventListener("click", () => {
 });
 
 $("#btn-refresh").addEventListener("click", load);
-load();
+load().then(() => {
+  setLive(true);
+});
 </script>
 </body>
 </html>
