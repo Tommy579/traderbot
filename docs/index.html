@@ -27,11 +27,37 @@
   body { margin: 0; background: var(--plane); color: var(--ink);
          font: 16px/1.5 system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
   header { background: var(--surface); border-bottom: 1px solid var(--border);
-           padding: 12px 16px; position: sticky; top: 0; z-index: 5; }
+           padding: 12px 16px; position: sticky; top: 0; z-index: 5;
+           display: flex; justify-content: space-between; align-items: center;
+           flex-wrap: wrap; gap: 12px; }
   .brand { display: flex; align-items: center; gap: 12px; }
   .brand .logo { width: 38px; height: 38px; border-radius: 9px; flex-shrink: 0; display: block; }
   .brand h1 { font-size: 17px; margin: 0; line-height: 1.25; }
   .brand .sub { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+  .live-toggle {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface); cursor: pointer; font-size: 13px; font-weight: 600;
+    user-select: none; color: var(--ink-2); transition: all 0.15s ease;
+  }
+  .live-toggle:hover { border-color: var(--ink); color: var(--ink); }
+  .live-toggle.active {
+    color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent);
+    background: color-mix(in srgb, var(--good) 10%, var(--surface));
+  }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block;
+  }
+  .live-toggle.active .live-dot {
+    background: var(--good);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent);
+    animation: live-pulse 1.5s infinite;
+  }
+  @keyframes live-pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 40%, transparent); }
+    70% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--good) 0%, transparent); }
+    100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 0%, transparent); }
+  }
   main { padding: 14px 12px 60px; max-width: 760px; margin: 0 auto; }
   .card { background: var(--surface); border: 1px solid var(--border);
           border-radius: 12px; padding: 14px; margin-bottom: 12px; }
@@ -68,6 +94,7 @@
   button { border-radius: 9px; padding: 10px 16px; font-size: 15px; cursor: pointer;
            border: 1px solid var(--ink); background: var(--ink); color: var(--plane);
            font-weight: 600; }
+  .quote-live { color: var(--good); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -79,16 +106,46 @@
       <div class="sub">Compte d'entraînement Alpaca (argent fictif)</div>
     </div>
   </div>
+  <button id="toggle-live" class="live-toggle" type="button" title="Actualisation automatique et calcul en direct">
+    <span class="live-dot"></span>
+    <span>Direct</span>
+  </button>
 </header>
 <main>
   <div class="card" id="account-card" style="display:none">
-    <h2>État du compte d'entraînement</h2>
+    <div class="top">
+      <h2>État du compte d'entraînement</h2>
+      <div id="live-badge" class="badge ok" style="display:none">Calcul en direct</div>
+    </div>
     <div class="small" id="account-hint">Valeurs du dernier cycle exécuté (en dollars fictifs).</div>
     <div class="tiles">
       <div class="tile"><div class="label">Valeur totale</div><div class="value" id="acc-equity">—</div></div>
       <div class="tile"><div class="label">Cash disponible</div><div class="value" id="acc-cash">—</div></div>
       <div class="tile"><div class="label">Actions détenues</div><div class="value" id="acc-count">—</div></div>
       <div class="tile"><div class="label">Gains / pertes latents</div><div class="value" id="acc-pnl">—</div></div>
+    </div>
+    <div id="positions-wrap" style="margin-top: 14px; display: none;">
+      <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px;">Détail des positions en portefeuille</div>
+      <div style="overflow-x: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbole</th>
+              <th class="num">Quantité</th>
+              <th class="num">Prix d'achat</th>
+              <th class="num">Cours</th>
+              <th class="num">Valeur</th>
+              <th class="num">P&amp;L latent</th>
+              <th class="num">Filet stop</th>
+            </tr>
+          </thead>
+          <tbody id="positions-tbody"></tbody>
+        </table>
+      </div>
+      <div class="small" style="margin-top: 8px;">
+        <span id="live-status-note">Cotations : dernier cours enregistré.</span>
+        <a href="#" id="link-finnhub" style="color: var(--accent); text-decoration: none; margin-left: 6px;">[Clé Finnhub temps réel]</a>
+      </div>
     </div>
   </div>
   <div class="card" id="status-card">
@@ -125,20 +182,84 @@ const frDate = (iso) => {
 };
 const sideLabel = (s) => s === "buy" ? "achat" : s === "sell" ? "vente" : s;
 
+let currentReport = null;
+const livePrices = {};
+let liveActive = false;
+let liveInterval = null;
+let quotePollInterval = null;
+let finnhubWs = null;
+
 function setStatus(text, bad) {
   const el = $("#status");
   el.textContent = text;
   el.className = bad ? "small err" : "small";
 }
 
+function recalculateAndRenderPositions() {
+  if (!currentReport) return;
+  const cash = currentReport.cash != null ? currentReport.cash : currentReport.equity;
+  const positions = currentReport.positions || [];
+
+  const wrap = $("#positions-wrap");
+  const tbody = $("#positions-tbody");
+
+  if (!positions.length) {
+    wrap.style.display = "none";
+    $("#acc-equity").textContent = money(cash);
+    $("#acc-cash").textContent = money(cash);
+    $("#acc-count").textContent = "0";
+    $("#acc-pnl").textContent = money(0);
+    $("#acc-pnl").className = "value";
+    return;
+  }
+
+  wrap.style.display = "block";
+
+  let totalPositionsValue = 0;
+  let totalPnl = 0;
+
+  const rowsHtml = positions.map((p) => {
+    const liveP = livePrices[p.symbol];
+    const curPrice = (typeof liveP === "number" && liveP > 0) ? liveP : p.current_price;
+    const mktVal = p.qty * curPrice;
+    const pnl = (curPrice - p.avg_entry_price) * p.qty;
+    const pnlPct = p.avg_entry_price > 0 ? (curPrice - p.avg_entry_price) / p.avg_entry_price : 0;
+
+    totalPositionsValue += mktVal;
+    totalPnl += pnl;
+
+    const isLive = typeof liveP === "number" && liveP > 0;
+    return `<tr>
+      <td><b>${esc(p.symbol)}</b></td>
+      <td class="num">${esc(p.qty)}</td>
+      <td class="num">${money(p.avg_entry_price)}</td>
+      <td class="num ${isLive ? 'quote-live' : ''}">${money(curPrice)}${isLive ? ' ●' : ''}</td>
+      <td class="num">${money(mktVal)}</td>
+      <td class="num ${cls(pnl)}">${pnl > 0 ? "+" : ""}${money(pnl)} <small>(${pct(pnlPct)})</small></td>
+      <td class="num">${p.stop_price ? money(p.stop_price) : "—"}</td>
+    </tr>`;
+  }).join("");
+
+  tbody.innerHTML = rowsHtml;
+
+  const totalEquity = cash + totalPositionsValue;
+  $("#acc-equity").textContent = money(totalEquity);
+  $("#acc-cash").textContent = money(cash);
+  $("#acc-count").textContent = String(positions.length);
+  const pnlEl = $("#acc-pnl");
+  pnlEl.textContent = (totalPnl > 0 ? "+" : "") + money(totalPnl);
+  pnlEl.className = "value " + cls(totalPnl);
+}
+
 function updateAccountCard(entries) {
   const card = $("#account-card");
   if (!entries || !entries.length) {
     card.style.display = "none";
+    currentReport = null;
     return;
   }
-  // Cherche le cycle le plus récent ayant des données de compte (exécuté ou non sauté)
-  const latestWithData = entries.slice().reverse().find(e => {
+
+  const latestWithData = entries.slice().reverse().find((e) => {
     const rep = e.report || {};
     return !rep.skipped && (rep.cash != null || rep.equity != null);
   }) || entries[entries.length - 1];
@@ -146,20 +267,16 @@ function updateAccountCard(entries) {
   const r = (latestWithData && latestWithData.report) || {};
   if (r.equity == null && r.cash == null) {
     card.style.display = "none";
+    currentReport = null;
     return;
   }
 
   card.style.display = "block";
-  const pnl = r.unrealized_pnl || 0;
-  $("#acc-equity").textContent = money(r.equity);
-  $("#acc-cash").textContent = money(r.cash != null ? r.cash : r.equity);
-  $("#acc-count").textContent = r.positions_count ?? 0;
-  const pnlEl = $("#acc-pnl");
-  pnlEl.textContent = (pnl > 0 ? "+" : "") + money(pnl);
-  pnlEl.className = "value " + cls(pnl);
+  currentReport = r;
   if (r.session_date) {
     $("#account-hint").textContent = "Dernier cycle exécuté le " + frDate(r.session_date) + " (valeurs en dollars fictifs).";
   }
+  recalculateAndRenderPositions();
 }
 
 function render(entries) {
@@ -207,7 +324,7 @@ function render(entries) {
         lines.push(`<p class="small">Aucun ordre transmis ce jour-là.</p>`);
       }
       if (approved.length) {
-        lines.push(`<p class="small">Filets posés : ${approved.filter(d => d.stop_price)
+        lines.push(`<p class="small">Filets posés : ${approved.filter((d) => d.stop_price)
           .map((d) => `${esc(d.symbol)} à ${money(d.stop_price)}`).join(", ") || "—"}</p>`);
       }
     }
@@ -232,8 +349,6 @@ function render(entries) {
 async function load() {
   setStatus("Chargement…");
   try {
-    // Paramètre anti-cache : GitHub Pages met les fichiers en cache, ce qui
-    // afficherait sinon des statistiques périmées.
     const res = await fetch(STATS_PATH + "?t=" + Date.now());
     if (!res.ok) throw new Error("réponse HTTP " + res.status);
     const data = await res.json();
@@ -248,6 +363,139 @@ async function load() {
     setStatus("Lecture impossible : " + e.message, true);
   }
 }
+
+async function fetchQuote(symbol) {
+  const target = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d`;
+  const urls = [
+    `https://corsproxy.io/?url=${encodeURIComponent(target)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
+    target
+  ];
+  for (const u of urls) {
+    try {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 3000);
+      const res = await fetch(u, { signal: ctrl.signal });
+      clearTimeout(tid);
+      if (!res.ok) continue;
+      const json = await res.json();
+      const price = json?.chart?.result?.[0]?.meta?.regularMarketPrice;
+      if (typeof price === "number" && price > 0) return price;
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function pollQuotesOnce() {
+  if (!currentReport || !currentReport.positions || !currentReport.positions.length) return;
+  const symbols = currentReport.positions.map((p) => p.symbol);
+  let updatedAny = false;
+  for (const sym of symbols) {
+    const p = await fetchQuote(sym);
+    if (p !== null) {
+      livePrices[sym] = p;
+      updatedAny = true;
+    }
+  }
+  if (updatedAny) {
+    $("#live-status-note").textContent = "Cotations : calcul en direct actualisé.";
+    recalculateAndRenderPositions();
+  }
+}
+
+function initFinnhubWs(symbols) {
+  if (finnhubWs) {
+    try { finnhubWs.close(); } catch (_) {}
+    finnhubWs = null;
+  }
+  const token = localStorage.getItem("finnhub_token");
+  if (!token || !symbols || !symbols.length) return;
+  try {
+    const ws = new WebSocket(`wss://ws.finnhub.io?token=${encodeURIComponent(token)}`);
+    finnhubWs = ws;
+    ws.onopen = () => {
+      symbols.forEach((s) => ws.send(JSON.stringify({ type: "subscribe", symbol: s })));
+      $("#live-status-note").textContent = "Cotations : flux continu Finnhub actif.";
+    };
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "trade" && Array.isArray(msg.data)) {
+          let hasChange = false;
+          msg.data.forEach((t) => {
+            if (t.s && typeof t.p === "number" && t.p > 0) {
+              livePrices[t.s] = t.p;
+              hasChange = true;
+            }
+          });
+          if (hasChange) recalculateAndRenderPositions();
+        }
+      } catch (_) {}
+    };
+    ws.onclose = () => { finnhubWs = null; };
+  } catch (_) {}
+}
+
+function setLive(active) {
+  liveActive = Boolean(active);
+  const btn = $("#toggle-live");
+  const badge = $("#live-badge");
+
+  if (liveActive) {
+    btn.classList.add("active");
+    badge.style.display = "inline-block";
+    $("#live-status-note").textContent = "Cotations : recherche des cours en cours…";
+
+    const symbols = (currentReport && currentReport.positions ? currentReport.positions.map((p) => p.symbol) : []);
+    initFinnhubWs(symbols);
+    pollQuotesOnce();
+
+    if (!quotePollInterval) {
+      quotePollInterval = setInterval(pollQuotesOnce, 4000);
+    }
+    if (!liveInterval) {
+      liveInterval = setInterval(load, 10000);
+    }
+  } else {
+    btn.classList.remove("active");
+    badge.style.display = "none";
+    $("#live-status-note").textContent = "Cotations : dernier cours enregistré.";
+    if (quotePollInterval) {
+      clearInterval(quotePollInterval);
+      quotePollInterval = null;
+    }
+    if (liveInterval) {
+      clearInterval(liveInterval);
+      liveInterval = null;
+    }
+    if (finnhubWs) {
+      try { finnhubWs.close(); } catch (_) {}
+      finnhubWs = null;
+    }
+  }
+}
+
+$("#toggle-live").addEventListener("click", () => {
+  setLive(!$("#toggle-live").classList.contains("active"));
+});
+
+$("#link-finnhub").addEventListener("click", (e) => {
+  e.preventDefault();
+  const current = localStorage.getItem("finnhub_token") || "";
+  const token = prompt("Entrez une clé d'API Finnhub gratuite (sur finnhub.io) pour recevoir les cotations en continu instantané par WebSocket :", current);
+  if (token !== null) {
+    const trimmed = token.trim();
+    if (trimmed) {
+      localStorage.setItem("finnhub_token", trimmed);
+    } else {
+      localStorage.removeItem("finnhub_token");
+    }
+    if (liveActive) {
+      const symbols = (currentReport && currentReport.positions ? currentReport.positions.map((p) => p.symbol) : []);
+      initFinnhubWs(symbols);
+    }
+  }
+});
 
 $("#btn-refresh").addEventListener("click", load);
 load();

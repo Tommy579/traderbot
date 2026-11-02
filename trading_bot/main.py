@@ -508,6 +508,7 @@ class CycleReport:
     cash: float = 0.0
     positions_count: int = 0
     unrealized_pnl: float = 0.0
+    positions: list[dict[str, Any]] = field(default_factory=list)
     signals: dict[str, str] = field(default_factory=dict)
     decisions: list[RiskDecision] = field(default_factory=list)
     orders: list[OrderReceipt] = field(default_factory=list)
@@ -525,6 +526,7 @@ class CycleReport:
             "cash": self.cash,
             "positions_count": self.positions_count,
             "unrealized_pnl": self.unrealized_pnl,
+            "positions": list(self.positions),
             "signals": dict(self.signals),
             "decisions": [
                 {
@@ -740,6 +742,18 @@ class TradingBot:
             report.equity = account.equity
             report.cash = account.cash
             report.positions_count = len(account.positions)
+            report.positions = [
+                {
+                    "symbol": p.symbol,
+                    "qty": p.qty,
+                    "avg_entry_price": p.avg_entry_price,
+                    "current_price": p.current_price,
+                    "stop_price": p.stop_price,
+                    "market_value": p.market_value,
+                    "unrealized_pnl": p.unrealized_pnl,
+                }
+                for p in account.positions.values()
+            ]
             report.unrealized_pnl = sum(p.unrealized_pnl for p in account.positions.values())
             self._notify(report)
             return report
@@ -844,6 +858,18 @@ class TradingBot:
         report.equity = account.equity
         report.cash = account.cash
         report.positions_count = len(account.positions)
+        report.positions = [
+            {
+                "symbol": p.symbol,
+                "qty": p.qty,
+                "avg_entry_price": p.avg_entry_price,
+                "current_price": p.current_price,
+                "stop_price": p.stop_price,
+                "market_value": p.market_value,
+                "unrealized_pnl": p.unrealized_pnl,
+            }
+            for p in account.positions.values()
+        ]
         report.unrealized_pnl = sum(p.unrealized_pnl for p in account.positions.values())
         self._notify(report)
         return report

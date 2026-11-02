@@ -250,6 +250,8 @@ def test_cycle_is_recorded_in_history(settings, bot_bars) -> None:
     assert entries[0]["errors"] == []
     assert entries[0]["cash"] == pytest.approx(100_000.0 - 200.0 * 100.0)
     assert entries[0]["positions_count"] == 1
+    assert entries[0]["positions"][0]["symbol"] == "AAPL"
+    assert entries[0]["positions"][0]["qty"] == pytest.approx(200.0)
     assert entries[0]["unrealized_pnl"] == pytest.approx(0.0)
 
 
