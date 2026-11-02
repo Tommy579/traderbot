@@ -456,6 +456,81 @@ async function pollQuotesOnce() {
   }
 }
 
+async function refreshAlpacaSnapshot() {
+  const key = (localStorage.getItem("alpaca_key") || "").trim();
+  const secret = (localStorage.getItem("alpaca_secret") || "").trim();
+  if (!key || !secret) {
+    await pollQuotesOnce();
+    recalculateAndRenderPositions();
+    return false;
+  }
+
+  const headers = {
+    "APCA-API-KEY-ID": key,
+    "APCA-API-SECRET-KEY": secret
+  };
+
+  try {
+    const accPromise = fetch("https://paper-api.alpaca.markets/v2/account", { headers })
+      .then((r) => r.ok ? r.json() : null)
+      .catch(() => null);
+
+    const posPromise = fetch("https://paper-api.alpaca.markets/v2/positions", { headers })
+      .then((r) => r.ok ? r.json() : null)
+      .catch(() => null);
+
+    const [accData, posData] = await Promise.all([accPromise, posPromise]);
+
+    if (!accData && !posData) {
+      await pollQuotesOnce();
+      recalculateAndRenderPositions();
+      return false;
+    }
+
+    if (accData && currentReport) {
+      if (accData.cash) currentReport.cash = parseFloat(accData.cash);
+      if (accData.equity) currentReport.equity = parseFloat(accData.equity);
+    }
+
+    if (Array.isArray(posData) && currentReport) {
+      currentReport.positions_count = posData.length;
+      const posMap = {};
+      posData.forEach((p) => {
+        const curPrice = parseFloat(p.current_price);
+        posMap[p.symbol] = {
+          symbol: p.symbol,
+          qty: parseFloat(p.qty),
+          avg_entry_price: parseFloat(p.avg_entry_price),
+          current_price: curPrice,
+          market_value: parseFloat(p.market_value),
+          unrealized_pnl: parseFloat(p.unrealized_pl),
+          stop_price: null
+        };
+        if (curPrice > 0) {
+          livePrices[p.symbol] = curPrice;
+        }
+      });
+
+      if (Array.isArray(currentReport.positions)) {
+        currentReport.positions.forEach((existing) => {
+          if (posMap[existing.symbol]) {
+            posMap[existing.symbol].stop_price = existing.stop_price;
+          }
+        });
+      }
+      currentReport.positions = Object.values(posMap);
+    }
+
+    recalculateAndRenderPositions();
+    $("#live-status-note").textContent = "Cotations : actualisées à l'instant depuis l'API Alpaca (" + new Date().toLocaleTimeString("fr-FR") + ").";
+    return true;
+  } catch (_) {
+    await pollQuotesOnce();
+    recalculateAndRenderPositions();
+    return false;
+  }
+}
+
 function connectAlpacaWs(symbols) {
   if (alpacaWs) {
     try { alpacaWs.close(); } catch (_) {}
@@ -602,8 +677,22 @@ $("#btn-alpaca-save").addEventListener("click", () => {
   modalAlpaca.close();
 });
 
-$("#btn-refresh").addEventListener("click", load);
-load().then(() => {
+$("#btn-refresh").addEventListener("click", async () => {
+  const btn = $("#btn-refresh");
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = "Actualisation…";
+  try {
+    await load();
+    await refreshAlpacaSnapshot();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+
+load().then(async () => {
+  await refreshAlpacaSnapshot();
   setLive(true);
 });
 </script>
