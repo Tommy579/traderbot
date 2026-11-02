@@ -68,6 +68,15 @@ class AlwaysSellStrategy(AlwaysBuyStrategy):
         return pd.Series(SignalType.SELL, index=prepared.index, dtype=object)
 
 
+class AlwaysHoldStrategy(AlwaysBuyStrategy):
+    """Stratégie de test : ne propose jamais rien."""
+
+    name = "always_hold"
+
+    def compute_signals(self, prepared: pd.DataFrame) -> pd.Series:
+        return pd.Series(SignalType.HOLD, index=prepared.index, dtype=object)
+
+
 class FakeBroker:
     """Courtier simulé : compte, positions, prix et fills déterministes."""
 
@@ -795,6 +804,52 @@ def test_cycle_ignores_the_filter_when_it_is_absent(settings, bot_bars) -> None:
     report = bot.run_once()
     assert not report.skipped
     assert [decision.code.value for decision in report.decisions] == ["APPROVED"]
+
+
+def test_a_bullish_news_score_alone_opens_nothing(settings, bot_bars) -> None:
+    """Une actualité excellente ne déclenche aucun achat par elle-même.
+
+    La stratégie dit HOLD : le filtre ne peut que retirer des trades, jamais en
+    ajouter. C'est la garantie que le modèle de langage ne pilote pas le
+    portefeuille — son seul pouvoir est de dire non.
+    """
+    broker = FakeBroker()
+    news = FakeNewsAnalyzer({"AAPL": make_news(1.0, symbol="AAPL")})
+    bot = TradingBot(
+        settings,
+        AlwaysHoldStrategy(),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bot_bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+        news_analyzer=news,  # type: ignore[arg-type]
+    )
+    report = bot.run_once()
+
+    assert not report.skipped
+    assert broker.orders == [], "aucun ordre, même avec une actualité parfaite"
+    assert report.decisions == [], "rien à approuver ni à refuser"
+
+
+def test_a_critical_news_score_alone_opens_nothing(settings, bot_bars) -> None:
+    """Symétriquement, une menace critique ne crée pas de position à découvert.
+
+    Le filtre peut faire sortir, jamais faire entrer : sans position ouverte,
+    une alerte grave ne produit aucune vente.
+    """
+    broker = FakeBroker()
+    news = FakeNewsAnalyzer({"AAPL": make_news(-0.99, critical=True, symbol="AAPL")})
+    bot = TradingBot(
+        settings,
+        AlwaysHoldStrategy(),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bot_bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+        news_analyzer=news,  # type: ignore[arg-type]
+    )
+    report = bot.run_once()
+
+    assert broker.orders == [], "aucune vente à découvert sur simple alerte"
+    assert report.decisions == []
 
 
 def test_cycle_sends_webhook_report(settings, bot_bars) -> None:

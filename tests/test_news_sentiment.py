@@ -563,6 +563,63 @@ def test_no_article_means_no_model_call(tmp_path: Path) -> None:
     assert assessments["NVDA"].sentiment_score == 0.0
 
 
+def test_the_llm_cannot_choose_a_quantity() -> None:
+    """Le filtre pèse sur l'autorisation, jamais sur la taille.
+
+    Un score excellent doit produire exactement la même quantité et le même
+    stop qu'aucune actualité : le dimensionnement reste l'affaire du moteur de
+    risque, jamais celle du modèle de langage.
+    """
+    engine = RiskEngine()
+    sans = engine.evaluate_entry(
+        symbol="NVDA",
+        price=50.0,
+        atr=2.0,
+        account=make_account(),
+        now=NOW,
+        session_date=SESSION,
+    )
+    avec = engine.evaluate_entry(
+        symbol="NVDA",
+        price=50.0,
+        atr=2.0,
+        account=make_account(),
+        now=NOW,
+        session_date=SESSION,
+        news=make_assessment(1.0),
+    )
+    assert sans.approved and avec.approved
+    assert sans.intent is not None and avec.intent is not None
+    assert sans.intent.qty == avec.intent.qty
+    assert sans.intent.stop_price == avec.intent.stop_price
+
+
+def test_news_can_only_reject_never_change_anything_else() -> None:
+    """Le filtre est un veto à sens unique : il retire, il n'ajoute rien.
+
+    Toute note au-dessus du seuil doit donner une décision strictement
+    identique à l'absence de note. C'est la garantie structurelle que le
+    modèle ne peut pas influencer le portefeuille autrement qu'en refusant.
+    """
+    engine = RiskEngine()
+    for score in (0.0, 0.2, 0.8, 1.0):
+        decision = engine.evaluate_entry(
+            symbol="NVDA",
+            price=50.0,
+            atr=2.0,
+            account=make_account(),
+            now=NOW,
+            session_date=SESSION,
+            news=make_assessment(score),
+        )
+        assert decision.approved, f"score {score} ne doit pas bloquer"
+        assert decision.code is RejectionCode.APPROVED
+        assert decision.intent is not None
+        # Aucune trace du filtre dans la décision approuvée : il n'a rien
+        # modifié, il a seulement laissé passer.
+        assert "news_score" not in decision.metrics
+
+
 # ---------------------------------------------------------------------------
 # 4. Mode fail-safe
 # ---------------------------------------------------------------------------

@@ -286,6 +286,38 @@ def _build_news_analyzer(settings: Settings) -> NewsSentimentAnalyzer | None:
     )
 
 
+def _assess_news(
+    settings: Settings,
+    symbols: Sequence[str],
+    *,
+    errors: list[str] | None = None,
+) -> dict[str, NewsAssessment]:
+    """Note les actualités d'un ensemble de symboles, sans jamais lever.
+
+    Renvoie un dictionnaire vide si le filtre est inactif ou en panne. Le
+    diagnostic doit rester disponible même sans actualités : c'est un outil de
+    lecture, il ne doit pas dépendre d'un service tiers pour fonctionner.
+
+    Args:
+        settings: Configuration effective.
+        symbols: Symboles à noter.
+        errors: Liste à enrichir en cas d'incident (diagnostic web).
+
+    Returns:
+        Un verdict par symbole, éventuellement vide.
+    """
+    analyzer = _build_news_analyzer(settings)
+    if analyzer is None:
+        return {}
+    try:
+        return analyzer.assess(symbols)
+    except Exception as exc:  # noqa: BLE001 - jamais bloquant par construction
+        LOGGER.warning("filtre d'actualités ignoré: %s", exc)
+        if errors is not None:
+            errors.append(f"filtre d'actualités ignoré: {exc}")
+        return {}
+
+
 def _build_notifier(settings: Settings) -> Notifier | None:
     """Construit le diffuseur configuré (webhook et/ou publication GitHub).
 
@@ -1464,25 +1496,69 @@ def cmd_check(args: argparse.Namespace) -> int:
     if atr > 0:
         stop = signal.price - atr * settings.risk.atr_stop_multiple
         print(f"  stop ATR proposé: {_format_number(stop)}")
+
+    # Le diagnostic doit annoncer la même chose que le cycle : un signal BUY
+    # peut être refusé la nuit venue pour cause d'actualité, et c'est ici qu'on
+    # le voit. Sans ce bloc, le diagnostic promettrait un achat qui n'aura pas
+    # lieu — précisément le genre d'écart qui rend un outil trompeur.
+    engine = RiskEngine(settings.risk)
+    panic = settings.risk.news_panic_exit_threshold
+    assessment = _assess_news(settings, [symbol]).get(symbol)
+    print("")
+    if assessment is None:
+        print("  actualités      : filtre inactif (aucune analyse)")
+    else:
+        print(
+            f"  actualités      : score {assessment.sentiment_score:+.2f} "
+            f"(confiance {assessment.confidence:.2f}, "
+            f"{assessment.articles_count} article(s))"
+        )
+        print(f"  effet           : {news_effect_label(assessment, engine=engine, panic=panic)}")
+        if assessment.is_critical_threat:
+            print("  menace critique : oui")
+        print(f"  motif           : {assessment.rationale}")
+        if signal.action is SignalType.BUY and engine.news_vetoes_entry(assessment):
+            print(
+                "  ATTENTION       : ce signal d'achat serait REFUSÉ ([NEWS_VETO]) "
+                "lors du prochain cycle."
+            )
     print("")
     return 0
+
+
+def news_effect_label(
+    assessment: NewsAssessment, *, engine: RiskEngine, panic: float
+) -> str:
+    """Qualifie l'effet d'une note d'actualités sur la décision d'achat.
+
+    Source unique de vérité pour l'affichage : le radar, le diagnostic en
+    ligne de commande et le diagnostic web doivent annoncer la même chose que
+    ce que le moteur de risque appliquera réellement.
+
+    Args:
+        assessment: Note d'actualités du symbole.
+        engine: Moteur portant les seuils configurés.
+        panic: Seuil de sortie d'urgence.
+
+    Returns:
+        ``"SORTIE URGENCE"``, ``"VETO ENTRÉE"`` ou ``"—"``.
+    """
+    if assessment.is_critical_threat and assessment.sentiment_score <= panic:
+        return "SORTIE URGENCE"
+    if engine.news_vetoes_entry(assessment):
+        return "VETO ENTRÉE"
+    return "—"
 
 
 def _format_news_row(
     symbol: str,
     assessment: NewsAssessment,
     *,
-    veto: float,
     panic: float,
     engine: RiskEngine,
 ) -> str:
     """Met en forme une ligne du radar d'actualités."""
-    if assessment.is_critical_threat and assessment.sentiment_score <= panic:
-        effect = "SORTIE URGENCE"
-    elif engine.news_vetoes_entry(assessment):
-        effect = "VETO ENTRÉE"
-    else:
-        effect = "—"
+    effect = news_effect_label(assessment, engine=engine, panic=panic)
     rationale = " ".join(assessment.rationale.split())
     return (
         f"{symbol:<9}{assessment.sentiment_score:>+8.2f}"
@@ -1542,7 +1618,7 @@ def cmd_news(args: argparse.Namespace) -> int:
         """Affiche une ligne sitôt calculée, sans attendre les suivantes."""
         print(
             _format_news_row(
-                symbol, assessment, veto=veto, panic=panic, engine=engine
+                symbol, assessment, panic=panic, engine=engine
             ),
             flush=True,
         )

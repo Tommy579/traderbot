@@ -53,12 +53,15 @@ from trading_bot.history import HistoryStore
 from trading_bot.main import (
     StateStore,
     TradingBot,
+    _assess_news,
     _build_news_analyzer,
     _build_notifier,
     _inject_benchmark,
     _symbol_message,
     build_strategy,
+    news_effect_label,
 )
+from trading_bot.risk.engine import RiskEngine
 from trading_bot.strategies.base import StrategyError
 from trading_bot.web.jobs import JobManager
 
@@ -293,6 +296,15 @@ def _run_check(
             )
         except (DataError, BrokerError, StrategyError) as exc:
             errors.append(f"benchmark {benchmark_symbol}: {exc}")
+
+    # Le filtre d'actualités est consulté ici comme il l'est dans le cycle :
+    # le diagnostic doit annoncer le sort réel d'un signal d'achat, pas le
+    # signal brut. Le cache d'articles rend l'opération gratuite tant qu'aucune
+    # actualité nouvelle n'est parue.
+    assessments = _assess_news(settings, symbols, errors=errors)
+    engine = RiskEngine(settings.risk)
+    panic = settings.risk.news_panic_exit_threshold
+
     rows: list[dict[str, Any]] = []
     for symbol in symbols:
         # Même tolérance que le cycle réel : un symbole mal orthographié est
@@ -315,19 +327,29 @@ def _run_check(
             errors.append(_symbol_message(symbol, exc))
             continue
         atr = signal.indicators.get("atr", 0.0)
-        rows.append(
-            {
-                "symbol": symbol,
-                "action": signal.action.value,
-                "reason": signal.reason,
-                "price": signal.price,
-                "atr": atr,
-                "proposed_stop": round(signal.price - atr * settings.risk.atr_stop_multiple, 2)
-                if atr > 0
-                else None,
-                "as_of": signal.as_of.isoformat(),
+        news = assessments.get(symbol)
+        row: dict[str, Any] = {
+            "symbol": symbol,
+            "action": signal.action.value,
+            "reason": signal.reason,
+            "price": signal.price,
+            "atr": atr,
+            "proposed_stop": round(signal.price - atr * settings.risk.atr_stop_multiple, 2)
+            if atr > 0
+            else None,
+            "as_of": signal.as_of.isoformat(),
+        }
+        if news is not None:
+            row["news"] = {
+                "score": news.sentiment_score,
+                "confidence": news.confidence,
+                "critical": news.is_critical_threat,
+                "articles": news.articles_count,
+                "rationale": news.rationale,
+                "effect": news_effect_label(news, engine=engine, panic=panic),
+                "blocks_entry": engine.news_vetoes_entry(news),
             }
-        )
+        rows.append(row)
     return {
         "account": {
             "equity": account.equity,
@@ -337,6 +359,12 @@ def _run_check(
         "market_open": market_open,
         "strategy": strategy_name,
         "signals": rows,
+        "news": {
+            "consulted": bool(assessments),
+            "model": settings.openrouter_model,
+            "veto_threshold": settings.risk.news_veto_threshold,
+            "panic_threshold": settings.risk.news_panic_exit_threshold,
+        },
         "errors": errors,
     }
 
