@@ -113,6 +113,7 @@
   .badge.hold { background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--ink-2); }
   .badge.ok { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); }
   .badge.warn { background: color-mix(in srgb, var(--series-1) 14%, transparent); color: var(--series-1); }
+  .badge.err { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
   .banner {
     border-radius: 10px; padding: 12px 14px; margin-bottom: 16px;
     border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
@@ -163,11 +164,11 @@
   .skel { color: var(--muted); font-size: 14px; }
 
   .card {
-    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+      /* transition supprimée : pas d'animation au survol pour les éléments non cliquables */
   }
   .card:hover {
-    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
   }
   button {
     transition: all 0.1s ease;
@@ -193,6 +194,23 @@
     from { opacity: 0; transform: translateY(20px); }
     to { opacity: 1; transform: translateY(0); }
   }
+  .live-toggle {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 6px 12px; border-radius: 8px; border: 1px solid var(--card-border);
+    background: var(--surface-1); cursor: pointer; font-size: 13px; font-weight: 600;
+    user-select: none; color: var(--ink-2);
+  }
+  .live-toggle.active {
+    color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent);
+    background: color-mix(in srgb, var(--good) 10%, var(--surface-1));
+  }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block;
+  }
+  .live-toggle.active .live-dot {
+    background: var(--good);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent);
+  }
 </style>
 </head>
 <body>
@@ -206,6 +224,10 @@
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <button id="toggle-live" class="live-toggle" type="button" title="Actualisation automatique toutes les 2 secondes">
+      <span class="live-dot"></span>
+      <span>Direct</span>
+    </button>
     <button id="btn-refresh" class="secondary" style="padding:7px 12px;font-size:13px;border-radius:8px">Actualiser</button>
     <nav>
       <button data-tab="dashboard" class="active">Tableau de bord</button>
@@ -727,15 +749,35 @@ $("#btn-check").addEventListener("click", async () => {
     const result = await pollJob(job.id, () => msg("check-msg", "Analyse en cours (quelques secondes)…", "info"));
     const badge = { BUY: "buy", SELL: "sell", HOLD: "hold" };
     const label = { BUY: "ACHETER", SELL: "VENDRE", HOLD: "NE RIEN FAIRE" };
+    /* Note d'actualités : c'est elle qui décide si un achat passera la nuit
+       venue. Afficher le signal brut sans elle promettrait un achat qui
+       n'aura pas lieu. */
+    const newsCell = (n) => {
+      if (!n) return `<td class="num small">—</td>`;
+      const cls = n.blocks_entry ? "err" : (n.score <= -0.3 ? "warn" : "ok");
+      const sign = n.score >= 0 ? "+" : "";
+      const flag = n.critical ? `<br><span class="small">menace critique</span>` : "";
+      return `<td class="num small"><span class="badge ${cls}">${sign}${n.score.toFixed(2)}</span>${flag}</td>`;
+    };
     $("#check-result").innerHTML = `
-      <p class="small" style="margin-top:14px">Décision proposée pour chaque action suivie :</p>
-      <div class="table-wrap"><table><thead><tr><th>Action</th><th>Décision</th><th>Prix actuel</th><th>Filet proposé</th><th>Pourquoi</th></tr></thead><tbody>
-      ${result.signals.map(r => `<tr><td><b>${esc(r.symbol)}</b></td>
-        <td><span class="badge ${badge[r.action] || "hold"}">${label[r.action] || esc(r.action)}</span></td>
+      <p class="small" style="margin-top:14px">Décision proposée pour chaque action suivie, actualités prises en compte :</p>
+      <div class="table-wrap"><table><thead><tr><th>Action</th><th>Décision</th><th>Actualités</th><th>Prix actuel</th><th>Filet proposé</th><th>Pourquoi</th></tr></thead><tbody>
+      ${result.signals.map(r => {
+        const blocked = !!(r.news && r.news.blocks_entry && r.action === "BUY");
+        const cls = blocked ? "hold" : (badge[r.action] || "hold");
+        const txt = blocked ? "ACHAT REFUSÉ (actualité)" : (label[r.action] || esc(r.action));
+        const why = blocked && r.news ? `${esc(r.news.effect)} — ${esc(r.news.rationale)}` : esc(r.reason);
+        return `<tr><td><b>${esc(r.symbol)}</b></td>
+        <td><span class="badge ${cls}">${txt}</span></td>
+        ${newsCell(r.news)}
         <td class="num">${money2(r.price)}</td>
         <td class="num">${r.proposed_stop ? money2(r.proposed_stop) : "—"}</td>
-        <td class="small">${esc(r.reason)}</td></tr>`).join("")}
+        <td class="small">${why}</td></tr>`;
+      }).join("")}
       </tbody></table></div>
+      ${result.news && result.news.consulted
+        ? `<p class="small">Filtre d'actualités : ${esc(result.news.model)} · veto d'achat ≤ ${result.news.veto_threshold} · sortie d'urgence ≤ ${result.news.panic_threshold}</p>`
+        : `<p class="small">Filtre d'actualités inactif (aucune analyse) : la décision ci-dessus ne tient compte que de la stratégie.</p>`}
       ${(result.errors || []).length ? `<div class="banner"><b>Symboles écartés :</b><ul class="small" style="margin:6px 0 0">${(result.errors || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}`;
     msg("check-msg", "Diagnostic terminé. Rien n'a été acheté ni vendu.", "ok");
   } catch (e) { msg("check-msg", e.message, "err"); }
@@ -967,6 +1009,30 @@ $("#btn-settings").addEventListener("click", async () => {
 $("#btn-refresh").addEventListener("click", () => {
   refreshStatus();
 });
+
+let liveInterval = null;
+const liveBtn = $("#toggle-live");
+
+function setLive(active) {
+  if (active) {
+    liveBtn.classList.add("active");
+    if (!liveInterval) {
+      refreshStatus();
+      liveInterval = setInterval(refreshStatus, 2000);
+    }
+  } else {
+    liveBtn.classList.remove("active");
+    if (liveInterval) {
+      clearInterval(liveInterval);
+      liveInterval = null;
+    }
+  }
+}
+
+liveBtn.addEventListener("click", () => {
+  setLive(!liveBtn.classList.contains("active"));
+});
+
 setInterval(refreshStatus, 30000);
 
 refreshStatus();
