@@ -214,6 +214,37 @@ let liveActive = false;
 let liveInterval = null;
 let quotePollInterval = null;
 let alpacaWs = null;
+let pendingUpdates = false;
+let renderThrottleInterval = null;
+
+function recordLivePrice(symbol, price) {
+  if (typeof price === "number" && price > 0) {
+    if (livePrices[symbol] !== price) {
+      livePrices[symbol] = price;
+      pendingUpdates = true;
+    }
+  }
+}
+
+function startRenderThrottler() {
+  if (!renderThrottleInterval) {
+    // Cadence d'une seconde pour laisser le temps de lire les prix confortablement
+    renderThrottleInterval = setInterval(() => {
+      if (pendingUpdates) {
+        recalculateAndRenderPositions();
+        pendingUpdates = false;
+      }
+    }, 1000);
+  }
+}
+
+function stopRenderThrottler() {
+  if (renderThrottleInterval) {
+    clearInterval(renderThrottleInterval);
+    renderThrottleInterval = null;
+  }
+  pendingUpdates = false;
+}
 
 function setStatus(text, bad) {
   const el = $("#status");
@@ -415,19 +446,11 @@ async function fetchQuote(symbol) {
 async function pollQuotesOnce() {
   if (!currentReport || !currentReport.positions || !currentReport.positions.length) return;
   const symbols = currentReport.positions.map((p) => p.symbol);
-  let updatedAny = false;
   for (const sym of symbols) {
     const p = await fetchQuote(sym);
     if (p !== null) {
-      livePrices[sym] = p;
-      updatedAny = true;
+      recordLivePrice(sym, p);
     }
-  }
-  if (updatedAny) {
-    if (!alpacaWs) {
-      $("#live-status-note").textContent = "Cotations : calcul en direct actualisé.";
-    }
-    recalculateAndRenderPositions();
   }
 }
 
@@ -460,15 +483,13 @@ function connectAlpacaWs(symbols) {
               trades: symbols,
               quotes: symbols
             }));
-            $("#live-status-note").textContent = "Cotations : flux Alpaca connecté en direct.";
+            $("#live-status-note").textContent = "Cotations : flux Alpaca connecté (actualisation chaque seconde).";
           } else if (m.T === "t" && m.S && typeof m.p === "number" && m.p > 0) {
-            livePrices[m.S] = m.p;
-            recalculateAndRenderPositions();
+            recordLivePrice(m.S, m.p);
           } else if (m.T === "q" && m.S) {
             const mid = (m.bp && m.ap) ? (m.bp + m.ap) / 2 : (m.ap || m.bp);
             if (typeof mid === "number" && mid > 0) {
-              livePrices[m.S] = mid;
-              recalculateAndRenderPositions();
+              recordLivePrice(m.S, mid);
             }
           } else if (m.T === "error") {
             $("#live-status-note").textContent = "Alpaca : erreur " + (m.msg || m.code);
@@ -498,6 +519,8 @@ function setLive(active) {
     badge.style.display = "inline-block";
     $("#live-status-note").textContent = "Cotations : recherche des cours en cours…";
 
+    startRenderThrottler();
+
     const symbols = (currentReport && currentReport.positions ? currentReport.positions.map((p) => p.symbol) : []);
     const connected = connectAlpacaWs(symbols);
     pollQuotesOnce();
@@ -512,6 +535,7 @@ function setLive(active) {
     btn.classList.remove("active");
     badge.style.display = "none";
     $("#live-status-note").textContent = "Cotations : dernier cours enregistré.";
+    stopRenderThrottler();
     if (quotePollInterval) {
       clearInterval(quotePollInterval);
       quotePollInterval = null;
