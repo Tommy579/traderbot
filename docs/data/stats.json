@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-03T20:56:05.998238+00:00",
+ "updated_at": "2026-11-03T20:57:17.492953+00:00",
  "entries": [
   {
    "received_at": "2026-11-02T08:09:00.648728+00:00",
@@ -129,81 +129,81 @@
    }
   },
   {
-   "received_at": "2026-11-03T20:56:05.998181+00:00",
+   "received_at": "2026-11-03T20:57:17.492907+00:00",
    "event": "cycle_trading",
    "report": {
-    "timestamp": "2026-11-03T20:55:02.818675+00:00",
+    "timestamp": "2026-11-03T20:57:08.588412+00:00",
     "session_date": "2026-11-03",
     "mode": "full",
     "skipped": false,
     "skip_reason": null,
-    "equity": 98653.296295052,
-    "cash": 9864.101829052,
+    "equity": 98622.117006,
+    "cash": 9864.11,
     "positions_count": 7,
-    "unrealized_pnl": -1346.6865486767967,
+    "unrealized_pnl": -1377.8740086767968,
     "positions": [
-     {
-      "symbol": "LLY",
-      "qty": 11.529,
-      "avg_entry_price": 1407.75,
-      "current_price": 1407.01,
-      "stop_price": 1319.85,
-      "market_value": 16221.41829,
-      "unrealized_pnl": -8.531460000000104
-     },
-     {
-      "symbol": "MSFT",
-      "qty": 42.8096,
-      "avg_entry_price": 525.668198,
-      "current_price": 522.615,
-      "stop_price": 502.42,
-      "market_value": 22372.939104,
-      "unrealized_pnl": -130.70618510079797
-     },
-     {
-      "symbol": "PLTR",
-      "qty": 62.9349,
-      "avg_entry_price": 184.33572,
-      "current_price": 175.23,
-      "stop_price": 168.8,
-      "market_value": 11028.082526999999,
-      "unrealized_pnl": -573.0675776280012
-     },
-     {
-      "symbol": "XOM",
-      "qty": 128.946,
-      "avg_entry_price": 182.45,
-      "current_price": 177.55,
-      "stop_price": 174.6,
-      "market_value": 22894.3623,
-      "unrealized_pnl": -631.8353999999971
-     },
      {
       "symbol": "BRK.B",
       "qty": 9.7395,
       "avg_entry_price": 556.95,
-      "current_price": 556.92,
+      "current_price": 557.33,
       "stop_price": 543.32,
-      "market_value": 5424.122339999999,
-      "unrealized_pnl": -0.2921850000008415
-     },
-     {
-      "symbol": "WMT",
-      "qty": 43.3757,
-      "avg_entry_price": 125.13,
-      "current_price": 125.05,
-      "stop_price": 120.01,
-      "market_value": 5424.131285,
-      "unrealized_pnl": -3.4700559999999263
+      "market_value": 5428.115535,
+      "unrealized_pnl": 3.7010099999999557
      },
      {
       "symbol": "KO",
       "qty": 57.268,
       "avg_entry_price": 94.693761,
-      "current_price": 94.715,
+      "current_price": 94.71,
       "stop_price": 91.47,
-      "market_value": 5424.138620000001,
-      "unrealized_pnl": 1.2163150520004837
+      "market_value": 5423.85228,
+      "unrealized_pnl": 0.9299750519999302
+     },
+     {
+      "symbol": "LLY",
+      "qty": 11.529,
+      "avg_entry_price": 1407.75,
+      "current_price": 1406.57,
+      "stop_price": 1319.85,
+      "market_value": 16216.345529999999,
+      "unrealized_pnl": -13.604220000000733
+     },
+     {
+      "symbol": "MSFT",
+      "qty": 42.8096,
+      "avg_entry_price": 525.668198,
+      "current_price": 521.72,
+      "stop_price": 502.42,
+      "market_value": 22334.624512000002,
+      "unrealized_pnl": -169.02077710079718
+     },
+     {
+      "symbol": "PLTR",
+      "qty": 62.9349,
+      "avg_entry_price": 184.33572,
+      "current_price": 175.31,
+      "stop_price": 168.8,
+      "market_value": 11033.117319,
+      "unrealized_pnl": -568.0327856280004
+     },
+     {
+      "symbol": "WMT",
+      "qty": 43.3757,
+      "avg_entry_price": 125.13,
+      "current_price": 125.1,
+      "stop_price": 120.01,
+      "market_value": 5426.30007,
+      "unrealized_pnl": -1.3012710000000494
+     },
+     {
+      "symbol": "XOM",
+      "qty": 128.946,
+      "avg_entry_price": 182.45,
+      "current_price": 177.56,
+      "stop_price": 174.6,
+      "market_value": 22895.65176,
+      "unrealized_pnl": -630.5459399999983
      }
     ],
     "signals": {
@@ -223,76 +223,10 @@
      "WMT": "HOLD",
      "XOM": "BUY"
     },
-    "decisions": [
-     {
-      "id": "90fd68dbb2d80fb0c7e6bda8",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "cash_sweep",
-      "symbol": "BRK.B",
-      "side": "buy",
-      "qty": 9.7395,
-      "stop_price": 543.32
-     },
-     {
-      "id": "3d433a6e3362f658f0da210b",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "cash_sweep",
-      "symbol": "WMT",
-      "side": "buy",
-      "qty": 43.3757,
-      "stop_price": 120.01
-     },
-     {
-      "id": "7f305f06b9eb88f2b97f87cf",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "cash_sweep",
-      "symbol": "KO",
-      "side": "buy",
-      "qty": 57.268,
-      "stop_price": 91.47
-     }
-    ],
-    "orders": [
-     {
-      "order_id": "be79e3ba-87c8-4162-bafb-59534c1cd208",
-      "client_order_id": "tb90fd68dbb2d80fb0c7e6bda8",
-      "symbol": "BRK.B",
-      "side": "buy",
-      "qty": 9.7395,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "7a3666bc-47e0-4acc-a697-5ad490b7131d",
-      "client_order_id": "tb3d433a6e3362f658f0da210b",
-      "symbol": "WMT",
-      "side": "buy",
-      "qty": 43.3757,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "7757c4c4-08c3-46f1-9642-ecfa5d280d72",
-      "client_order_id": "tb7f305f06b9eb88f2b97f87cf",
-      "symbol": "KO",
-      "side": "buy",
-      "qty": 57.268,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     }
-    ],
+    "decisions": [],
+    "orders": [],
     "halts": [],
-    "errors": [
-     "BRK.B: annulation des ordres ouverts impossible: annulation de l'ordre ouvert be79e3ba-87c8-4162-bafb-59534c1cd208 (BRK.B) impossible",
-     "WMT: annulation des ordres ouverts impossible: annulation de l'ordre ouvert 7a3666bc-47e0-4acc-a697-5ad490b7131d (WMT) impossible",
-     "KO: rejet de l'ordre KO"
-    ]
+    "errors": []
    }
   }
  ]
