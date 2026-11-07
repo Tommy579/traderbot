@@ -276,9 +276,9 @@ les résultats du backtest sont reproductibles.
 ## Qualité
 
 ```
-346 tests passés            (env -u PYTHONPATH .venv/bin/python -m pytest -q)
+350 tests passés            (env -u PYTHONPATH .venv/bin/python -m pytest -q)
 couverture                  81 % des instructions
-mypy --strict               (27 fichiers source, 0 erreur)
+mypy --strict               (29 fichiers source, 0 erreur)
 ruff check / ruff format    (0 violation)
 ```
 
@@ -306,7 +306,7 @@ réseau.
   prochaine actualité.
 * **Univers actions uniquement**, long-only, une position par symbole, pas de
   vente à découvert ni d'effet de levier (le sizing plafonne sur les liquidités).
-* **Validation** — les 346 tests et les backtests historiques (yfinance,
+* **Validation** — les 350 tests et les backtests historiques (yfinance,
   AAPL+MSFT 2022-2024, cache disque) ont tourné sur cette machine. La boucle live n'a
   **pas** été exécutée contre un compte Alpaca réel dans cet environnement :
   elle est validée contre des doublures de
@@ -320,7 +320,10 @@ réseau.
 trading_bot/
 ├── config.py              # Settings (Pydantic), RiskConfig, BacktestConfig, garde-fous paper
 ├── clock.py               # horloge alignée sur l'heure en ligne (offset monotonic)
+├── bot.py                 # orchestrateur : cycle complet, stratégies, helpers de cycle
+├── state.py               # état persistant (risque, stops) et journal d'audit atomiques
 ├── withdrawal.py          # retraits manuels : annulation vérifiée, audit, plancher de cash
+├── main.py                # ligne de commande : arguments, formatage, codes de sortie
 ├── data/
 │   ├── loader.py          # normalisation OHLCV, yfinance, cache disque, indicateurs (pandas-ta + natif)
 │   └── __init__.py
@@ -347,7 +350,6 @@ trading_bot/
 ├── execution/
 │   ├── alpaca_client.py   # wrapper Alpaca Paper (alpaca-py), idempotence
 │   └── __init__.py
-└── main.py                # boucle live, persistance d'état, audit, CLI
-tests/                     # 346 tests hors ligne
+tests/                     # tests hors ligne (courtier et données simulés)
 tradingbot                 # lanceur (uv, PYTHONPATH neutralisé)
 ```
