@@ -276,8 +276,8 @@ les résultats du backtest sont reproductibles.
 ## Qualité
 
 ```
-350 tests passés            (env -u PYTHONPATH .venv/bin/python -m pytest -q)
-couverture                  81 % des instructions
+362 tests passés            (env -u PYTHONPATH .venv/bin/python -m pytest -q)
+couverture                  83 % des instructions
 mypy --strict               (29 fichiers source, 0 erreur)
 ruff check / ruff format    (0 violation)
 ```
@@ -306,7 +306,7 @@ réseau.
   prochaine actualité.
 * **Univers actions uniquement**, long-only, une position par symbole, pas de
   vente à découvert ni d'effet de levier (le sizing plafonne sur les liquidités).
-* **Validation** — les 350 tests et les backtests historiques (yfinance,
+* **Validation** — les 362 tests et les backtests historiques (yfinance,
   AAPL+MSFT 2022-2024, cache disque) ont tourné sur cette machine. La boucle live n'a
   **pas** été exécutée contre un compte Alpaca réel dans cet environnement :
   elle est validée contre des doublures de
