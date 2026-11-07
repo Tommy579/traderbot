@@ -155,7 +155,10 @@ class OnlineClock:
         now_mono = time.monotonic()
         needs_sync = False
         with self._lock:
-            if self._offset_seconds is None or (now_mono - self._last_sync_mono) >= self._sync_ttl:
+            if (
+                self._offset_seconds is None
+                or (now_mono - self._last_sync_mono) >= self._sync_ttl
+            ):
                 needs_sync = True
 
         if needs_sync:

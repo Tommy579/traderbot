@@ -290,8 +290,8 @@ def test_cash_sweep_allocates_excess_above_buffer() -> None:
 
     by_sym = {d.intent.symbol: d.intent for d in decisions if d.intent}
     assert by_sym["BRK.B"].qty == pytest.approx(100.0)  # 10 000 / 100
-    assert by_sym["WMT"].qty == pytest.approx(200.0)    # 10 000 / 50
-    assert by_sym["KO"].qty == pytest.approx(400.0)     # 10 000 / 25
+    assert by_sym["WMT"].qty == pytest.approx(200.0)  # 10 000 / 50
+    assert by_sym["KO"].qty == pytest.approx(400.0)  # 10 000 / 25
 
 
 def test_cash_sweep_capped_by_max_safe_haven_pct() -> None:
@@ -306,7 +306,9 @@ def test_cash_sweep_capped_by_max_safe_haven_pct() -> None:
     )
     # Déjà 40 000 $ de BRK.B détenu sur 100 000 $ d'équité.
     # Capacité restante : 50 000 - 40 000 = 10 000 $.
-    pos_brk = Position(symbol="BRK.B", qty=400.0, avg_entry_price=100.0, current_price=100.0)
+    pos_brk = Position(
+        symbol="BRK.B", qty=400.0, avg_entry_price=100.0, current_price=100.0
+    )
     account = AccountState(
         equity=100_000.0,
         cash=50_000.0,
@@ -367,7 +369,9 @@ def test_auto_unwind_sells_only_necessary_portion() -> None:
         )
     )
     # 20 000 $ de BRK.B (200 parts à 100 $)
-    pos_brk = Position(symbol="BRK.B", qty=200.0, avg_entry_price=100.0, current_price=100.0)
+    pos_brk = Position(
+        symbol="BRK.B", qty=200.0, avg_entry_price=100.0, current_price=100.0
+    )
     account = AccountState(
         equity=100_000.0,
         cash=5_000.0,
@@ -377,7 +381,9 @@ def test_auto_unwind_sells_only_necessary_portion() -> None:
     prices = {"BRK.B": 100.0}
 
     # On a besoin de 8 000 $ supplémentaires
-    decisions = engine.evaluate_safe_haven_unwind(account, needed_cash=8_000.0, prices=prices, now=NOW)
+    decisions = engine.evaluate_safe_haven_unwind(
+        account, needed_cash=8_000.0, prices=prices, now=NOW
+    )
     assert len(decisions) == 1
     dec = decisions[0]
     assert dec.approved
@@ -397,8 +403,12 @@ def test_auto_unwind_across_multiple_safe_havens() -> None:
             safe_haven_symbols=["BRK.B", "WMT"],
         )
     )
-    pos_brk = Position(symbol="BRK.B", qty=50.0, avg_entry_price=100.0, current_price=100.0)  # 5 000 $
-    pos_wmt = Position(symbol="WMT", qty=100.0, avg_entry_price=50.0, current_price=50.0)    # 5 000 $
+    pos_brk = Position(
+        symbol="BRK.B", qty=50.0, avg_entry_price=100.0, current_price=100.0
+    )  # 5 000 $
+    pos_wmt = Position(
+        symbol="WMT", qty=100.0, avg_entry_price=50.0, current_price=50.0
+    )  # 5 000 $
     account = AccountState(
         equity=100_000.0,
         cash=2_000.0,
@@ -408,12 +418,14 @@ def test_auto_unwind_across_multiple_safe_havens() -> None:
     prices = {"BRK.B": 100.0, "WMT": 50.0}
 
     # Besoin de 7 000 $ : 5 000 $ de BRK.B (totalité) + 2 000 $ de WMT (partiel)
-    decisions = engine.evaluate_safe_haven_unwind(account, needed_cash=7_000.0, prices=prices, now=NOW)
+    decisions = engine.evaluate_safe_haven_unwind(
+        account, needed_cash=7_000.0, prices=prices, now=NOW
+    )
     assert len(decisions) == 2
 
     by_sym = {d.intent.symbol: d.intent for d in decisions if d.intent}
     assert by_sym["BRK.B"].qty == pytest.approx(50.0)  # 50 * 100 = 5 000 $
-    assert by_sym["WMT"].qty == pytest.approx(40.0)    # 40 * 50 = 2 000 $
+    assert by_sym["WMT"].qty == pytest.approx(40.0)  # 40 * 50 = 2 000 $
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +480,9 @@ def test_bot_cycle_executes_auto_unwind_to_fund_offensive_buy(tmp_path: Path) ->
     bars = _make_bars([90.0 + i for i in range(30)])
 
     # 30 000 $ de BRK.B et seulement 10 500 $ de cash (buffer 10 000 $, donc 500 $ utilisable)
-    pos_brk = Position(symbol="BRK.B", qty=300.0, avg_entry_price=100.0, current_price=100.0)
+    pos_brk = Position(
+        symbol="BRK.B", qty=300.0, avg_entry_price=100.0, current_price=100.0
+    )
     broker = FakeBroker(
         equity=100_000.0,
         cash=10_500.0,
@@ -487,7 +501,9 @@ def test_bot_cycle_executes_auto_unwind_to_fund_offensive_buy(tmp_path: Path) ->
     assert not report.skipped
 
     # On doit retrouver un ordre de vente auto-unwind sur BRK.B
-    unwinds = [o for o in broker.orders if o.side is Side.SELL and o.reason == "safe_haven_unwind"]
+    unwinds = [
+        o for o in broker.orders if o.side is Side.SELL and o.reason == "safe_haven_unwind"
+    ]
     assert len(unwinds) >= 1
     assert unwinds[0].symbol == "BRK.B"
 

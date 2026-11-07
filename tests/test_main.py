@@ -29,11 +29,13 @@ from trading_bot.main import (
     StateStore,
     TradingBot,
     _inject_benchmark,
+    build_strategy,
     market_closed_message,
 )
 from trading_bot.risk.engine import Position, Side
 from trading_bot.strategies.base import SignalType, Strategy
 from trading_bot.strategies.relative_momentum import RelativeMomentumStrategy
+from trading_bot.strategies.shield_sword import ShieldSwordStrategy
 
 NOW = datetime(2024, 1, 10, 15, 0, tzinfo=UTC)
 
@@ -173,9 +175,7 @@ class FakeNewsAnalyzer:
         self.assessments = assessments
         self.calls: list[list[str]] = []
 
-    def assess(
-        self, symbols, *, now=None
-    ) -> dict[str, NewsAssessment]:
+    def assess(self, symbols, *, now=None) -> dict[str, NewsAssessment]:
         self.calls.append(list(symbols))
         return {
             symbol: self.assessments[symbol]
@@ -300,7 +300,9 @@ def test_dry_run_never_transmits_order(settings, bot_bars) -> None:
     assert "AAPL" not in state.stops
 
 
-def make_news(score: float, *, critical: bool = False, symbol: str = "AAPL") -> NewsAssessment:
+def make_news(
+    score: float, *, critical: bool = False, symbol: str = "AAPL"
+) -> NewsAssessment:
     """Verdict d'actualités prêt à l'emploi pour les tests de cycle."""
     return NewsAssessment(
         symbol=symbol,
@@ -678,9 +680,7 @@ def test_benchmark_label_follows_the_configuration(bot_bars) -> None:
     _inject_benchmark(strategy, bot_bars, "QQQ")
 
     assert strategy.benchmark_symbol == "QQQ"
-    assert "QQQ" in strategy.explain(
-        strategy.prepare(bot_bars), SignalType.HOLD
-    )
+    assert "QQQ" in strategy.explain(strategy.prepare(bot_bars), SignalType.HOLD)
 
 
 def test_publish_stats_backfills_oldest_first(settings, monkeypatch) -> None:
@@ -1001,3 +1001,125 @@ def test_watch_only_leaves_healthy_position_intact(settings, bot_bars) -> None:
     assert broker.orders == []
     assert report.decisions == []
 
+
+def test_build_strategy_reads_shield_params_from_settings(tmp_path) -> None:
+    """Les paramètres Bouclier + Épée du .env pilotent réellement la stratégie."""
+    from trading_bot.main import build_strategy
+
+    configured = Settings(
+        _env_file=None,
+        symbols=["AAPL"],
+        state_dir=tmp_path / "state",
+        shield_allocation_pct=0.60,
+        sword_allocation_pct=0.40,
+        sword_top_n=5,
+        sword_rebalance_days=60,
+        sword_trend_sma=120,
+        sword_stop_atr_multiplier=4.0,
+        sword_max_loss_pct=0.08,
+        shield_symbol="SHV",
+    )
+    strategy = build_strategy("shield_sword", settings=configured)
+
+    assert isinstance(strategy, ShieldSwordStrategy)
+    assert strategy.params.shield_allocation_pct == pytest.approx(0.60)
+    assert strategy.params.sword_allocation_pct == pytest.approx(0.40)
+    assert strategy.params.sword_top_n == 5
+    assert strategy.params.sword_rebalance_days == 60
+    assert strategy.params.sword_trend_sma == 120
+    assert strategy.params.sword_stop_atr_multiplier == pytest.approx(4.0)
+    assert strategy.params.sword_max_loss_pct == pytest.approx(0.08)
+    assert strategy.params.shield_symbol == "SHV"
+    # Le Bouclier de la stratégie suit la configuration, pas une constante.
+    assert strategy.params.shield_symbols[0] == "SHV"
+
+
+def test_shield_sword_cycle_fetches_the_configured_shield_symbol(
+    tmp_path, bars_factory
+) -> None:
+    """Le cycle live télécharge et trade le symbole du Bouclier configuré."""
+    settings = Settings(
+        _env_file=None,
+        symbols=["AAPL"],
+        state_dir=tmp_path / "state",
+        shield_symbol="SHV",
+        safe_haven_enabled=False,
+    )
+    bars = bars_factory([100.0 + 0.2 * i for i in range(260)], start="2023-01-02")
+    requested: list[str] = []
+
+    class RecordingBars(FakeBars):
+        def fetch_bars(self, symbol, *, timeframe="1Day", lookback_days=400, now=None):
+            requested.append(symbol)
+            return self.bars
+
+    broker = FakeBroker(prices={"AAPL": 100.0})
+    bot = TradingBot(
+        settings,
+        build_strategy("shield_sword", settings=settings),
+        broker,  # type: ignore[arg-type]
+        bars=RecordingBars(bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+    )
+    bot.run_once()
+
+    assert "SHV" in requested, "le Bouclier configuré doit entrer dans l'univers analysé"
+
+
+def test_shield_sword_funds_the_shield_sleeve(tmp_path, bars_factory) -> None:
+    """Le cycle investit réellement le Bouclier configuré, sans stop."""
+    settings = Settings(
+        _env_file=None,
+        symbols=["AAPL"],
+        state_dir=tmp_path / "state",
+        shield_symbol="SHV",
+        safe_haven_enabled=False,
+    )
+    bars = bars_factory([100.0 + 0.2 * i for i in range(260)], start="2023-01-02")
+    broker = FakeBroker(prices={"AAPL": 100.0, "SHV": 100.0})
+    bot = TradingBot(
+        settings,
+        build_strategy("shield_sword", settings=settings),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+    )
+
+    report = bot.run_once()
+
+    shield_orders = [
+        order for order in broker.orders if getattr(order, "symbol", "") == "SHV"
+    ]
+    assert shield_orders, "le Bouclier doit être acheté, pas seulement analysé"
+    assert max(order.qty for order in shield_orders) == pytest.approx(700.0, rel=0.01)
+    assert all(order.stop_price is None for order in shield_orders)
+    assert any(d.reason == "shield_allocation" for d in report.decisions)
+
+
+def test_shield_position_never_receives_an_atr_stop(tmp_path, bars_factory) -> None:
+    """Le Bouclier n'est pas une action à stopper : aucun stop ATR ne lui est collé."""
+    settings = Settings(
+        _env_file=None,
+        symbols=["AAPL"],
+        state_dir=tmp_path / "state",
+        shield_symbol="SHV",
+        safe_haven_enabled=False,
+    )
+    bars = bars_factory([100.0 + 0.2 * i for i in range(260)], start="2023-01-02")
+    broker = FakeBroker(prices={"AAPL": 100.0, "SHV": 100.0})
+    bot = TradingBot(
+        settings,
+        build_strategy("shield_sword", settings=settings),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+    )
+    bot.run_once()
+    bot.run_once()  # un second cycle révèle un stop ATR ajouté après coup
+
+    shield_orders = [
+        order for order in broker.orders if getattr(order, "symbol", "") == "SHV"
+    ]
+    assert shield_orders, "le Bouclier doit être acheté"
+    assert all(order.stop_price is None for order in shield_orders)
+    assert "SHV" not in bot._state_store.load().stops

@@ -15,9 +15,15 @@ d'exécution refuse tout ce qui n'est pas `https://paper-api.alpaca.markets`.
    référence un objet privé du module `risk.engine`. Un jeton forgé ailleurs est
    rejeté (`OrderIntent.__post_init__`), et toute modification de quantité, de
    sens ou de symbole après approbation casse l'invariant et lève `ValueError`.
-3. **Parité backtest / live** — le backtest utilise la même stratégie, le même
-   moteur de risque et le même chemin de décision que la boucle live. Aucun
-   `# TODO`, aucun chemin de code réservé au backtest.
+3. **Parité backtest / live** — le backtest exécute les **mêmes appels** au
+   moteur de risque que la boucle live : entrées classées par momentum, stops,
+   trailing, prises de profit partielles, écrémage des lignes surpondérées,
+   reconstitution du plancher de cash, financement du Bouclier et cash sweep.
+   La différence tient au modèle de barres (exécution à l'ouverture `t+1`,
+   stop sur le `low`), pas aux décisions. Le filtre d'actualités, lui, n'est
+   pas consulté en backtest : il est injectable (`news_hook`) et inerte par
+   défaut, faute de données point-in-time — l'équivalent de
+   `NEWS_FILTER_ENABLED=false`.
 4. **Déterminisme** — pas d'aléa dans le moteur : à barres identiques, deux
    backtests produisent la même courbe d'équité à l'unité flottante près (test
    dédié). Comme un fournisseur réseau peut réviser des prix entre deux
@@ -109,6 +115,17 @@ Trois moteurs de signaux sont disponibles via `--strategy` (défaut :
 | `ema_cross` | croisement EMA 20/50, RSI 50-70 | croisement EMA inverse |
 | `donchian_breakout` | clôture > plus haut 20 j achevés, SMA 200 au-dessus | clôture < plus bas 10 j |
 | `relative_momentum` | z-score momentum 60/120 j > SPY sur les deux horizons | momentum 60 j négatif ou sous SPY |
+| `shield_sword` | Top 3 momentum composite, au rebalancement mensuel | sortie du Top 3 au rebalancement suivant |
+
+`shield_sword` est une allocation Core-Satellite : `SHIELD_ALLOCATION_PCT` de
+l'équité part dans l'actif du Bouclier (`SHIELD_SYMBOL`, SGOV par défaut), sans
+stop ni trailing ; le reste est réparti sur les `SWORD_TOP_N` valeurs les plus
+vigoureuses. Le rebalancement tombe le **premier jour de bourse du mois**
+(`SWORD_REBALANCE_DAYS` = 20 séances) : cette ancre calendaire garantit que la
+même date est un rebalancement en backtest et en live, où la fenêtre de barres
+glisse à chaque cycle. Les signaux sont volontairement sans état : un actif
+retenu reçoit BUY à chaque rebalancement, et c'est le moteur de risque qui
+refuse un doublon (`POSITION_ALREADY_OPEN`), pas la stratégie.
 
 `relative_momentum` exige un benchmark (SPY par défaut) : il est téléchargé
 en backtest et récupéré chaque cycle en live — sans lui, la stratégie échoue
@@ -239,8 +256,9 @@ les résultats du backtest sont reproductibles.
 ## Qualité
 
 ```
-148 tests passés            (env -u PYTHONPATH uv run pytest -q)
-mypy --strict               (16 fichiers source, 0 erreur)
+337 tests passés            (env -u PYTHONPATH .venv/bin/python -m pytest -q)
+couverture                  79 % des instructions
+mypy --strict               (26 fichiers source, 0 erreur)
 ruff check / ruff format    (0 violation)
 ```
 
@@ -264,7 +282,7 @@ réseau.
   repli sur la dernière clôture en cas d'indisponibilité.
 * **Univers actions uniquement**, long-only, une position par symbole, pas de
   vente à découvert ni d'effet de levier (le sizing plafonne sur les liquidités).
-* **Validation** — les 148 tests et les backtests historiques (yfinance,
+* **Validation** — les 337 tests et les backtests historiques (yfinance,
   AAPL+MSFT 2022-2024, cache disque) ont tourné sur cette machine. La boucle live n'a
   **pas** été exécutée contre un compte Alpaca réel dans cet environnement :
   elle est validée contre des doublures de
@@ -277,6 +295,7 @@ réseau.
 ```
 trading_bot/
 ├── config.py              # Settings (Pydantic), RiskConfig, BacktestConfig, garde-fous paper
+├── clock.py               # horloge alignée sur l'heure en ligne (offset monotonic)
 ├── data/
 │   ├── loader.py          # normalisation OHLCV, yfinance, cache disque, indicateurs (pandas-ta + natif)
 │   └── __init__.py
@@ -285,6 +304,7 @@ trading_bot/
 │   ├── ema_cross.py       # EMA 20/50 filtré par RSI
 │   ├── donchian_breakout.py  # cassure de canal 20 j + filtre SMA 200
 │   ├── relative_momentum.py  # momentum 60/120 j vs benchmark SPY
+│   ├── shield_sword.py    # Bouclier + Épée, rebalancement mensuel calendaire
 │   └── __init__.py
 ├── risk/
 │   ├── engine.py          # dimensionnement, stops ATR, trailing, breakers, jetons
@@ -303,6 +323,6 @@ trading_bot/
 │   ├── alpaca_client.py   # wrapper Alpaca Paper (alpaca-py), idempotence
 │   └── __init__.py
 └── main.py                # boucle live, persistance d'état, audit, CLI
-tests/                     # 148 tests hors ligne
+tests/                     # 337 tests hors ligne
 tradingbot                 # lanceur (uv, PYTHONPATH neutralisé)
 ```

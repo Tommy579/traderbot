@@ -71,7 +71,6 @@ def _urllib_transport(
         return int(exc.code), exc.read()
 
 
-
 def _utc_now() -> datetime:
     """Horloge par défaut : maintenant en UTC, aligné sur l'heure en ligne."""
     return get_online_now()
@@ -249,10 +248,14 @@ class GitHubStatsPublisher:
                 ex_session = rep.get("session_date")
                 ex_mode = rep.get("mode", "full")
                 ex_ts = rep.get("timestamp") or existing.get("received_at", "")
-                ex_hour = str(ex_ts)[11:13] if len(str(ex_ts)) >= 13 and "T" in str(ex_ts) else ""
+                ex_hour = (
+                    str(ex_ts)[11:13] if len(str(ex_ts)) >= 13 and "T" in str(ex_ts) else ""
+                )
 
                 same_full = mode == "full" and ex_mode == "full"
-                same_watch = mode == "watch_only" and ex_mode == "watch_only" and ex_hour == hour
+                same_watch = (
+                    mode == "watch_only" and ex_mode == "watch_only" and ex_hour == hour
+                )
                 match = ex_session == session and (same_full or same_watch)
 
                 if match:

@@ -72,7 +72,9 @@ class JobManager:
     def running_kinds(self) -> set[str]:
         """Types de tâches actuellement en exécution."""
         with self._lock:
-            return {job.kind for job in self._jobs.values() if job.status is JobStatus.RUNNING}
+            return {
+                job.kind for job in self._jobs.values() if job.status is JobStatus.RUNNING
+            }
 
     def get(self, job_id: str) -> Job | None:
         """Retourne la tâche si elle est encore connue."""

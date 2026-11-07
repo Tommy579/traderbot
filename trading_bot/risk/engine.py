@@ -34,6 +34,9 @@ from trading_bot.config import RiskConfig
 
 _TOKEN_ISSUER: Final[object] = object()
 _STOP_TICK: Final[float] = 0.01
+#: Écart minimal (en fraction de l'équité) justifiant un réajustement du Bouclier.
+#: Sans ce seuil, la poche serait complétée de quelques dollars à chaque séance.
+_SHIELD_MIN_TOPUP_PCT: Final[float] = 0.005
 _QTY_EPSILON: Final[float] = 1e-9
 
 
@@ -405,6 +408,18 @@ class RiskEngine:
         """Régime de marché baissier (benchmark en-dessous de sa SMA longue)."""
         return self._bear_market
 
+    def is_defensive_symbol(self, symbol: str) -> bool:
+        """``True`` si l'actif appartient au Bouclier (repli ou cash rémunéré).
+
+        Le symbole du Bouclier vient de la configuration : le moteur ne doit pas
+        figer « SGOV » dans son code, sinon un ``SHIELD_SYMBOL`` personnalisé
+        resterait traité comme une action offensive (stop, trailing, écrémage).
+        """
+        return (
+            symbol == self._config.shield_symbol
+            or symbol in self._config.safe_haven_symbols
+        )
+
     def set_market_regime(
         self,
         *,
@@ -647,7 +662,11 @@ class RiskEngine:
                 now,
                 base_metrics,
             )
-        if self._bear_market and symbol not in self._config.safe_haven_symbols and not is_shield:
+        if (
+            self._bear_market
+            and symbol not in self._config.safe_haven_symbols
+            and not is_shield
+        ):
             return self._reject(
                 RejectionCode.BEAR_REGIME_VETO,
                 (
@@ -684,7 +703,7 @@ class RiskEngine:
         offensive_positions = [
             p
             for sym, p in account.positions.items()
-            if p.qty > 0 and sym not in self._config.safe_haven_symbols and sym != "SGOV"
+            if p.qty > 0 and not self.is_defensive_symbol(sym)
         ]
         if not is_shield and len(offensive_positions) >= self._config.max_open_positions:
             return self._reject(
@@ -986,7 +1005,9 @@ class RiskEngine:
         current_safe_haven_value = sum(
             p.market_value
             for sym, p in account.positions.items()
-            if sym in self._config.safe_haven_symbols and p.qty > 0
+            if sym in self._config.safe_haven_symbols
+            and sym != self._config.shield_symbol
+            and p.qty > 0
         )
         max_safe_haven_value = account.equity * self._config.max_safe_haven_total_pct
         room_safe_haven = max(0.0, max_safe_haven_value - current_safe_haven_value)
@@ -1007,6 +1028,10 @@ class RiskEngine:
         eligible_symbols: list[str] = []
         news_map = news or {}
         for sym in self._config.safe_haven_symbols:
+            if sym == self._config.shield_symbol:
+                # Le Bouclier a son propre financement, avec son propre poids
+                # cible : le compter deux fois doublerait la poche défensive.
+                continue
             price = prices.get(sym, 0.0)
             if not math.isfinite(price) or price <= 0:
                 continue
@@ -1063,6 +1088,78 @@ class RiskEngine:
             decisions.append(self._approve(intent, now, metrics))
 
         return decisions
+
+    def evaluate_shield_allocation(
+        self,
+        account: AccountState,
+        *,
+        symbol: str,
+        price: float,
+        target_weight: float,
+        now: datetime,
+    ) -> RiskDecision | None:
+        """Complète la poche défensive jusqu'à son poids cible.
+
+        Le Bouclier n'obéit pas à un signal : il se finance sur le cash
+        excédentaire (au-delà du buffer de liquidités et du plancher retirable)
+        jusqu'à représenter ``target_weight`` de l'équité. Le complément est
+        plafonné par l'exposition brute restante pour ne jamais franchir les
+        limites du profil de risque.
+
+        Returns:
+            Une décision d'achat approuvée portant un :class:`OrderIntent`, ou
+            ``None`` si la poche est déjà financée, si le prix est
+            inexploitable, ou si le complément est trop petit pour valoir un
+            ordre.
+        """
+        self._require_aware(now)
+        if target_weight <= 0.0 or account.equity <= 0.0 or account.halted:
+            return None
+        if not math.isfinite(price) or price <= 0.0:
+            return None
+
+        position = account.positions.get(symbol)
+        current_value = (
+            position.market_value if position is not None and position.qty > 0 else 0.0
+        )
+        gap = account.equity * target_weight - current_value
+        min_topup = max(
+            self._config.min_order_notional, account.equity * _SHIELD_MIN_TOPUP_PCT
+        )
+        if gap < min_topup:
+            return None
+
+        protected_cash = max(
+            account.equity * self._config.cash_buffer_pct,
+            self._config.withdrawable_cash_floor_usd,
+        )
+        cash_available = max(0.0, min(account.cash - protected_cash, account.buying_power))
+        gross_remaining = max(
+            0.0, account.equity * self.effective_gross_cap_pct() - account.gross_exposure
+        )
+        budget = min(gap, cash_available, gross_remaining)
+        qty = self._round_qty(budget / price)
+        if qty <= 0.0 or qty * price < self._config.min_order_notional:
+            return None
+
+        token = self._mint_token(symbol=symbol, side=Side.BUY, qty=qty, now=now)
+        intent = OrderIntent(
+            symbol=symbol,
+            side=Side.BUY,
+            qty=qty,
+            token=token,
+            order_type=OrderType.MARKET,
+            stop_price=None,
+            reason="shield_allocation",
+        )
+        metrics = {
+            "price": price,
+            "qty": qty,
+            "notional": qty * price,
+            "target_weight": target_weight,
+            "gap": gap,
+        }
+        return self._approve(intent, now, metrics)
 
     def evaluate_stop_exit(
         self,
@@ -1166,7 +1263,7 @@ class RiskEngine:
             return None
         if position.partial_tp_taken or position.qty <= 0:
             return None
-        if position.symbol == "SGOV" or position.symbol in self._config.safe_haven_symbols:
+        if self.is_defensive_symbol(position.symbol):
             return None
         if not math.isfinite(price) or price <= 0:
             return None
@@ -1208,7 +1305,7 @@ class RiskEngine:
             return None
         if account.equity <= 0 or position.qty <= 0 or price <= 0:
             return None
-        if position.symbol == "SGOV" or position.symbol in self._config.safe_haven_symbols:
+        if self.is_defensive_symbol(position.symbol):
             return None
         if not math.isfinite(price) or price <= 0:
             return None
@@ -1328,7 +1425,7 @@ class RiskEngine:
         barre suivante : l'appelant l'applique après la clôture, jamais avant.
         """
         config = self._config
-        if position.symbol == "SGOV" or position.symbol in config.safe_haven_symbols:
+        if self.is_defensive_symbol(position.symbol):
             return None
         if config.trailing_atr_multiple <= 0.0:
             return None

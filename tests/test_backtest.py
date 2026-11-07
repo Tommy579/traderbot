@@ -107,12 +107,8 @@ def test_benchmark_buy_hold_is_the_index_not_the_basket(bars_factory, wave_bars)
     benchmark = bars_factory([100.0 + i for i in range(80)])
     result = _runner().run({"TEST": wave_bars}, benchmark=benchmark)
 
-    expected_index = float(
-        benchmark["close"].iloc[-1] / benchmark["close"].iloc[0] - 1.0
-    )
-    expected_basket = float(
-        wave_bars["close"].iloc[-1] / wave_bars["close"].iloc[0] - 1.0
-    )
+    expected_index = float(benchmark["close"].iloc[-1] / benchmark["close"].iloc[0] - 1.0)
+    expected_basket = float(wave_bars["close"].iloc[-1] / wave_bars["close"].iloc[0] - 1.0)
 
     assert result.metrics["benchmark_buy_hold"] == pytest.approx(expected_index)
     assert result.metrics["basket_buy_hold"] == pytest.approx(expected_basket)
@@ -370,3 +366,146 @@ def test_ranking_favors_strongest_momentum(bars_factory) -> None:
     # qui a consommé le budget, pas AAA (score NaN, relegué).
     assert len(result.trades) == 1
     assert result.trades[0].symbol == "ZULU"
+
+
+class BuySymbolOnce(Strategy):
+    """Stratégie déterministe : un BUY sur un seul symbole, puis HOLD."""
+
+    name = "buy_symbol_once"
+
+    def __init__(self, target: str = "AAPL", buy_index: int = 5, atr: float = 1.0) -> None:
+        self._target = target
+        self._buy_index = buy_index
+        self._atr = atr
+
+    @property
+    def warmup_bars(self) -> int:
+        return 2
+
+    def prepare(self, bars: pd.DataFrame) -> pd.DataFrame:
+        out = bars.copy()
+        out["ema_fast"] = out["close"]
+        out["ema_slow"] = out["close"]
+        out["rsi"] = 50.0
+        out["atr"] = self._atr
+        return out
+
+    def compute_signals(self, prepared: pd.DataFrame) -> pd.Series:
+        signals = pd.Series(SignalType.HOLD, index=prepared.index, dtype=object)
+        if prepared.attrs.get("symbol") == self._target and self._buy_index < len(signals):
+            signals.iloc[self._buy_index] = SignalType.BUY
+        return signals
+
+
+def test_backtest_applies_partial_take_profit(bars_factory) -> None:
+    """La prise de profit partielle du live existe aussi dans le backtest."""
+    closes = [100.0] * 8 + [100.0 * 1.04**i for i in range(1, 30)]
+    bars = bars_factory(closes, spread=0.2)
+    risk = RiskConfig(
+        max_single_position_weight=0.99,
+        max_position_pct=0.99,
+        max_gross_exposure_pct=1.0,
+    )
+    runner = BacktestRunner(
+        BuyOnceStrategy(buy_index=5, atr=1.0),
+        config=BacktestConfig(initial_equity=100_000.0),
+        risk_config=risk,
+    )
+
+    result = runner.run({"AAPL": bars})
+
+    assert "partial_take_profit" in {trade.exit_reason for trade in result.trades}
+
+
+def test_backtest_applies_overweight_trim(bars_factory) -> None:
+    """L'écrémage du live (position > poids max) existe aussi dans le backtest."""
+    closes = [100.0] * 8 + [100.0 * 1.05**i for i in range(1, 30)]
+    bars = bars_factory(closes, spread=0.2)
+    risk = RiskConfig(
+        max_single_position_weight=0.10,
+        max_position_pct=0.10,
+        max_gross_exposure_pct=0.90,
+        partial_take_profit_pct=0.0,
+    )
+    runner = BacktestRunner(
+        BuyOnceStrategy(buy_index=5, atr=1.0),
+        config=BacktestConfig(initial_equity=100_000.0),
+        risk_config=risk,
+    )
+
+    result = runner.run({"AAPL": bars})
+
+    assert "position_trim_overweight" in {trade.exit_reason for trade in result.trades}
+
+
+def test_backtest_sweeps_excess_cash_into_safe_havens(bars_factory) -> None:
+    """Le cash excédentaire part dans la poche de repli, comme en live."""
+    flat = bars_factory([100.0] * 60, spread=0.1)
+    risk = RiskConfig(
+        safe_haven_enabled=True,
+        safe_haven_symbols=["SHV"],
+        cash_buffer_pct=0.10,
+        max_safe_haven_total_pct=0.50,
+        max_position_pct=0.10,
+        max_gross_exposure_pct=0.90,
+    )
+    runner = BacktestRunner(
+        BuySymbolOnce(target="AAPL", buy_index=5, atr=1.0),
+        config=BacktestConfig(initial_equity=100_000.0),
+        risk_config=risk,
+    )
+
+    result = runner.run({"AAPL": flat, "SHV": flat})
+
+    assert result.final_positions.get("SHV", 0.0) > 0.0
+    assert "SHV" not in {trade.symbol for trade in result.trades}
+
+
+def test_shield_sword_backtest_pays_no_synthetic_cash_interest(bars_factory) -> None:
+    """Le cash ne rapporte rien chez le courtier paper : le backtest non plus."""
+    from trading_bot.strategies.shield_sword import ShieldSwordStrategy
+
+    rising = bars_factory([100.0 * 1.002**i for i in range(260)], spread=0.1)
+    falling = bars_factory([200.0 * 0.999**i for i in range(260)], spread=0.1)
+    strategy = ShieldSwordStrategy(benchmark=falling)
+
+    runner = BacktestRunner(
+        strategy,
+        config=BacktestConfig(initial_equity=100_000.0),
+        risk_config=RiskConfig(),
+    )
+    result = runner.run({"AAPL": rising}, benchmark=falling)
+
+    # Régime baissier : aucune entrée offensive, donc l'équité reste intacte.
+    assert result.metrics["final_equity"] == pytest.approx(100_000.0)
+
+
+def test_shield_topup_keeps_the_existing_sleeve(bars_factory) -> None:
+    """Un complément de Bouclier s'ajoute à la poche, il ne la remplace pas."""
+    from trading_bot.strategies.shield_sword import ShieldSwordParams, ShieldSwordStrategy
+
+    # SGOV recule de 7,5 % puis se stabilise : le Bouclier est réajusté en cours de route.
+    closes = (
+        [100.0] * 205
+        + [100.0 - 1.5 * i for i in range(1, 6)]
+        + [92.5 + 0.2 * i for i in range(40)]
+    )
+    sgov = bars_factory(closes, spread=0.05)
+    falling = bars_factory([200.0 * 0.999**i for i in range(len(closes))], spread=0.05)
+
+    strategy = ShieldSwordStrategy(
+        ShieldSwordParams(shield_symbol="SGOV", shield_symbols=("SGOV",)),
+        benchmark=falling,
+    )
+    runner = BacktestRunner(
+        strategy,
+        config=BacktestConfig(initial_equity=100_000.0),
+        risk_config=RiskConfig(shield_symbol="SGOV", safe_haven_symbols=["SHV"]),
+    )
+
+    result = runner.run({"SGOV": sgov}, benchmark=falling, start_date=sgov.index[0])
+
+    assert not result.halts, "un réajustement du Bouclier a fait chuter l'équité"
+    # 70 % de 100 000 ≈ 70 000 investis, à ~92-100 $ l'action
+    assert result.final_positions["SGOV"] > 400.0
+    assert result.metrics["final_equity"] > 90_000.0

@@ -233,14 +233,35 @@ class RiskConfig(BaseModel):
             "automatique du surplus (ex: 25 % = 0.25)."
         ),
     )
+    shield_symbol: str = Field(
+        "SGOV",
+        description=(
+            "Actif du Bouclier (ETF de bons du Trésor court terme). Seul le "
+            "moteur de risque le sait : c'est lui qui décide qu'un actif est "
+            "défensif (pas de stop exigé, pas de trailing, pas d'écrémage)."
+        ),
+    )
+
+    @field_validator("shield_symbol")
+    @classmethod
+    def _validate_shield_symbol(cls, value: str) -> str:
+        """Normalise le symbole du Bouclier et rejette un ticker invalide."""
+        normalized = value.strip().upper()
+        if not _SYMBOL_RE.match(normalized):
+            raise ValueError(f"symbole de Bouclier invalide: {value!r}")
+        return normalized
 
     @model_validator(mode="after")
     def _validate_coherence(self) -> RiskConfig:
         """Vérifie les invariants croisés du profil de risque."""
         if self.safe_haven_enabled and not self.safe_haven_symbols:
-            raise ValueError("safe_haven_symbols ne peut pas être vide si safe_haven_enabled est activé")
+            raise ValueError(
+                "safe_haven_symbols ne peut pas être vide si safe_haven_enabled est activé"
+            )
         if self.cash_buffer_pct + self.max_safe_haven_total_pct > 1.0:
-            raise ValueError("cash_buffer_pct + max_safe_haven_total_pct ne peut pas dépasser 1.0")
+            raise ValueError(
+                "cash_buffer_pct + max_safe_haven_total_pct ne peut pas dépasser 1.0"
+            )
         if self.news_panic_exit_threshold > self.news_veto_threshold:
             raise ValueError(
                 "news_panic_exit_threshold doit être inférieur ou égal à "
@@ -292,6 +313,17 @@ class BacktestConfig(BaseModel):
         description="Nombre de barres entre le signal (clôture t) et l'exécution (ouverture t+n).",
     )
     market_timezone: str = "America/New_York"
+    cash_yield_pct: float = Field(
+        0.0,
+        ge=0.0,
+        le=0.20,
+        description=(
+            "Rendement annuel du cash en backtest. 0 par défaut : le compte "
+            "paper Alpaca ne rémunère pas les liquidités, et un backtest qui "
+            "les rémunère surestime la performance. Pour modéliser un placement "
+            "monétaire, préférez un vrai support (SHIELD_SYMBOL), qui a un prix."
+        ),
+    )
 
 
 class Settings(BaseSettings):
@@ -415,9 +447,7 @@ class Settings(BaseSettings):
     )
     openrouter_model: str = Field(
         "google/gemini-3.8-flash",
-        description=(
-            "Modèle OpenRouter pour l'analyse de sentiment des actualités."
-        ),
+        description=("Modèle OpenRouter pour l'analyse de sentiment des actualités."),
     )
     news_lookback_hours: int = Field(
         24, ge=1, le=168, description="Fenêtre d'actualités analysée, en heures."
@@ -435,9 +465,7 @@ class Settings(BaseSettings):
         5.0,
         ge=1.0,
         le=60.0,
-        description=(
-            "Délai maximal d'un appel OpenRouter en secondes (défaut 5s)."
-        ),
+        description=("Délai maximal d'un appel OpenRouter en secondes (défaut 5s)."),
     )
 
     # --- Stratégie Bouclier + Épée (Shield + Sword / Core-Satellite CPPI) ---
@@ -483,15 +511,12 @@ class Settings(BaseSettings):
         le=0.50,
         description="Perte maximale par ligne de l'Épée (12 % = 0.12).",
     )
-    risk_free_rate_annual: float = Field(
-        0.045,
-        ge=0.0,
-        le=0.20,
-        description="Taux sans risque annuel pour la rémunération du Bouclier (4.5 % = 0.045).",
-    )
-    shield_symbol: str = Field(
-        "SGOV",
-        description="Actif prioritaire du Bouclier (ETF Bons du Trésor US court terme).",
+    shield_symbol: str | None = Field(
+        None,
+        description=(
+            "Actif prioritaire du Bouclier (ETF Bons du Trésor US court terme). "
+            "Surcharge plate de RiskConfig.shield_symbol."
+        ),
     )
 
     risk: RiskConfig = Field(default_factory=RiskConfig)
@@ -613,7 +638,9 @@ class Settings(BaseSettings):
             ]
         if self.benchmark_symbol in self.safe_haven_symbols:
             self.safe_haven_symbols = [
-                symbol for symbol in self.safe_haven_symbols if symbol != self.benchmark_symbol
+                symbol
+                for symbol in self.safe_haven_symbols
+                if symbol != self.benchmark_symbol
             ]
 
         # Les symboles safe haven sont exclus automatiquement de l'univers offensif
@@ -652,11 +679,12 @@ class Settings(BaseSettings):
             "partial_take_profit_pct",
             "partial_take_profit_sell_ratio",
             "max_single_position_weight",
+            "shield_symbol",
         )
         overrides = {
             name: getattr(self, name)
             for name in risk_fields
-            if getattr(self, name) is not None
+            if name in self.model_fields_set and getattr(self, name) is not None
         }
         if overrides:
             merged = {**self.risk.model_dump(), **overrides}
@@ -737,11 +765,7 @@ def configure_logging(settings: Settings) -> logging.Logger:
 
 def update_env_file(env_path: Path, updates: dict[str, str]) -> None:
     """Mise à jour robuste du .env : évite les doublons et préserve le formatage."""
-    lines = (
-        env_path.read_text(encoding="utf-8").splitlines()
-        if env_path.exists()
-        else []
-    )
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
 
     for key, value in updates.items():
         # Un retour à la ligne dans une valeur permettrait d'injecter une clé

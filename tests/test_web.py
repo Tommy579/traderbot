@@ -81,9 +81,15 @@ class FakeWebBroker:
     def wait_for_fill(self, order_id, *, timeout_seconds=30.0) -> OrderReceipt:
         assert self.orders
         return OrderReceipt(
-            order_id=order_id, client_order_id="c", symbol="AAPL",
-            side=self.orders[-1].side, qty=1.0, status="filled",
-            filled_qty=1.0, avg_fill_price=100.0, submitted_at=NOW,
+            order_id=order_id,
+            client_order_id="c",
+            symbol="AAPL",
+            side=self.orders[-1].side,
+            qty=1.0,
+            status="filled",
+            filled_qty=1.0,
+            avg_fill_price=100.0,
+            submitted_at=NOW,
         )
 
 
@@ -110,7 +116,14 @@ def start_server(context: WebContext) -> tuple[ThreadingHTTPServer, int]:
     return httpd, httpd.server_address[1]
 
 
-def request(port: int, path: str, *, method: str = "GET", body: dict | None = None, headers: dict | None = None):
+def request(
+    port: int,
+    path: str,
+    *,
+    method: str = "GET",
+    body: dict | None = None,
+    headers: dict | None = None,
+):
     url = f"http://127.0.0.1:{port}{path}"
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -169,14 +182,13 @@ def test_same_origin_requests_are_allowed(settings, web_bars) -> None:
     httpd, port = start_server(make_context(settings, web_bars))
     local_origin = f"http://127.0.0.1:{port}"
     try:
-        code, payload = request(
-            port, "/api/status", headers={"Origin": local_origin}
-        )
+        code, payload = request(port, "/api/status", headers={"Origin": local_origin})
         assert code == 200
         assert payload["ok"] is True
 
         code, payload = request(
-            port, "/api/check",
+            port,
+            "/api/check",
             method="POST",
             body={"strategy": "ema_cross", "symbols": ["AAPL"]},
             headers={"Origin": local_origin},
@@ -205,7 +217,8 @@ def test_check_job_returns_signals(settings, web_bars) -> None:
     httpd, port = start_server(make_context(settings, web_bars))
     try:
         code, payload = request(
-            port, "/api/check",
+            port,
+            "/api/check",
             method="POST",
             body={"strategy": "ema_cross", "symbols": ["AAPL"]},
         )
@@ -225,7 +238,8 @@ def test_cycle_job_dry_run(settings, web_bars) -> None:
     httpd, port = start_server(make_context(settings, web_bars))
     try:
         _code, payload = request(
-            port, "/api/cycle",
+            port,
+            "/api/cycle",
             method="POST",
             body={"strategy": "ema_cross", "dry_run": True},
         )
@@ -243,7 +257,8 @@ def test_cycle_job_watch_only(settings, web_bars) -> None:
     httpd, port = start_server(make_context(settings, web_bars))
     try:
         _code, payload = request(
-            port, "/api/cycle",
+            port,
+            "/api/cycle",
             method="POST",
             body={"strategy": "ema_cross", "watch_only": True},
         )
@@ -256,21 +271,39 @@ def test_cycle_job_watch_only(settings, web_bars) -> None:
         httpd.shutdown()
 
 
-def test_backtest_job_with_fake_provider(settings, web_bars, monkeypatch, bars_factory) -> None:
+def test_backtest_job_with_fake_provider(
+    settings, web_bars, monkeypatch, bars_factory
+) -> None:
     import trading_bot.web.app as webapp
 
     long_bars = {"AAA": bars_factory([100.0] * 208 + [105.0, 106.0])}
-    monkeypatch.setattr(webapp, "CachedProvider", lambda provider, cache_dir, **kw: provider)
     monkeypatch.setattr(
-        webapp, "YFinanceProvider",
-        lambda: type("P", (), {"fetch": staticmethod(lambda symbol, start, end, interval="1d": long_bars[symbol])})(),
+        webapp, "CachedProvider", lambda provider, cache_dir, **kw: provider
+    )
+    monkeypatch.setattr(
+        webapp,
+        "YFinanceProvider",
+        lambda: type(
+            "P",
+            (),
+            {
+                "fetch": staticmethod(
+                    lambda symbol, start, end, interval="1d": long_bars[symbol]
+                )
+            },
+        )(),
     )
     httpd, port = start_server(make_context(settings, web_bars))
     try:
         _code, payload = request(
-            port, "/api/backtest",
+            port,
+            "/api/backtest",
             method="POST",
-            body={"strategy": "donchian_breakout", "symbols": ["AAA"], "start": "2023-01-01"},
+            body={
+                "strategy": "donchian_breakout",
+                "symbols": ["AAA"],
+                "start": "2023-01-01",
+            },
         )
         snapshot = wait_job(port, payload["job"]["id"], timeout=60)
         assert snapshot["status"] == "done", snapshot.get("error")
@@ -288,7 +321,9 @@ def test_config_update_roundtrip(settings, web_bars) -> None:
     httpd, port = start_server(context)
     try:
         code, payload = request(
-            port, "/api/config", method="POST",
+            port,
+            "/api/config",
+            method="POST",
             body={"symbols": ["MSFT", "NVDA"], "webhook_url": "https://example.com/hook"},
         )
         assert code == 200 and payload["ok"] is True
@@ -296,11 +331,15 @@ def test_config_update_roundtrip(settings, web_bars) -> None:
         fresh = Settings(_env_file=str(context.env_path))
         assert fresh.symbols == ["MSFT", "NVDA"]
         assert fresh.webhook_url is not None
-        assert "WEBHOOK_URL=https://example.com/hook" in context.env_path.read_text(encoding="utf-8")
+        assert "WEBHOOK_URL=https://example.com/hook" in context.env_path.read_text(
+            encoding="utf-8"
+        )
 
         # Désactivation du webhook via chaîne vide
         code, payload = request(
-            port, "/api/config", method="POST",
+            port,
+            "/api/config",
+            method="POST",
             body={"webhook_url": ""},
         )
         assert code == 200 and payload["ok"] is True
@@ -329,9 +368,7 @@ def test_cycle_concurrency_guard(settings, web_bars) -> None:
         job = context.jobs.submit("cycle", "test", lambda: time.sleep(2) or {})
         assert job.status is JobStatus.RUNNING
 
-        code, payload = request(
-            port, "/api/cycle", method="POST", body={"dry_run": True}
-        )
+        code, payload = request(port, "/api/cycle", method="POST", body={"dry_run": True})
         assert code == 200
         assert payload["ok"] is False
         assert "déjà en cours" in payload["error"]
@@ -370,7 +407,8 @@ def test_permanent_halt_reset_via_api(settings, web_bars) -> None:
         assert payload["ok"] is False  # sans confirmation ni raison
 
         _code, payload = request(
-            port, "/api/halt/reset",
+            port,
+            "/api/halt/reset",
             method="POST",
             body={"confirm": True, "reason": "J'ai vérifié les positions."},
         )
@@ -422,9 +460,7 @@ def test_cycle_triggered_from_gui_lands_in_history(settings, web_bars) -> None:
     context = make_context(settings, web_bars)
     httpd, port = start_server(context)
     try:
-        _code, payload = request(
-            port, "/api/cycle", method="POST", body={"dry_run": True}
-        )
+        _code, payload = request(port, "/api/cycle", method="POST", body={"dry_run": True})
         assert payload["ok"] is True
         snapshot = wait_job(port, payload["job"]["id"])
         assert snapshot["status"] == "done", snapshot.get("error")
@@ -634,7 +670,9 @@ def test_check_skips_unknown_symbol_instead_of_failing(settings, web_bars) -> No
 class RegistryWebBroker(FakeWebBroker):
     """Courtier doté d'un registre d'actifs, comme l'API Alpaca."""
 
-    def __init__(self, bars: dict[str, pd.DataFrame], registry: dict[str, AssetInfo]) -> None:
+    def __init__(
+        self, bars: dict[str, pd.DataFrame], registry: dict[str, AssetInfo]
+    ) -> None:
         super().__init__(bars)
         self.registry = registry
 
@@ -652,9 +690,7 @@ ASSET_BOOK: dict[str, AssetInfo] = {
 
 
 def _registry_context(settings, web_bars) -> WebContext:
-    return make_context(
-        settings, web_bars, broker=RegistryWebBroker(web_bars, ASSET_BOOK)
-    )
+    return make_context(settings, web_bars, broker=RegistryWebBroker(web_bars, ASSET_BOOK))
 
 
 def _env_text(settings) -> str | None:
@@ -752,7 +788,9 @@ def test_static_assets_and_pwa_manifest(settings, web_bars) -> None:
             assert resp.headers.get("Content-Type") == "image/svg+xml"
             assert b"<svg" in resp.read()
 
-        req_manifest = urllib.request.Request(f"http://127.0.0.1:{port}/manifest.webmanifest")
+        req_manifest = urllib.request.Request(
+            f"http://127.0.0.1:{port}/manifest.webmanifest"
+        )
         with urllib.request.urlopen(req_manifest, timeout=10) as resp:
             assert resp.status == 200
             assert "application/manifest+json" in resp.headers.get("Content-Type", "")
@@ -788,7 +826,9 @@ def test_withdraw_endpoints_and_floors(settings, web_bars) -> None:
     try:
         # 1. Retrait partiel par pourcentage
         code, payload = request(
-            port, "/api/withdraw", method="POST",
+            port,
+            "/api/withdraw",
+            method="POST",
             body={"symbol": "AAPL", "pct": 50.0},
         )
         assert code == 200 and payload["ok"] is True
@@ -798,7 +838,9 @@ def test_withdraw_endpoints_and_floors(settings, web_bars) -> None:
 
         # 2. Retrait global avec sanctuarisation du plancher de cash
         code, payload = request(
-            port, "/api/withdraw", method="POST",
+            port,
+            "/api/withdraw",
+            method="POST",
             body={"free_cash": 15000.0},
         )
         assert code == 200 and payload["ok"] is True
@@ -807,7 +849,9 @@ def test_withdraw_endpoints_and_floors(settings, web_bars) -> None:
 
         # 3. Modification des planchers via /api/config
         code, payload = request(
-            port, "/api/config", method="POST",
+            port,
+            "/api/config",
+            method="POST",
             body={"withdrawable_cash_floor_usd": "3000", "equity_hard_floor_usd": "50000"},
         )
         assert code == 200 and payload["ok"] is True
@@ -816,7 +860,3 @@ def test_withdraw_endpoints_and_floors(settings, web_bars) -> None:
         assert fresh.risk.equity_hard_floor_usd == 50000.0
     finally:
         httpd.shutdown()
-
-
-
-

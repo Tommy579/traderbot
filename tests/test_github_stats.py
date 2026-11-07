@@ -45,7 +45,9 @@ class FakeGitHub:
         return self.responses.pop(0)
 
 
-def _file_response(entries: list[dict[str, Any]], sha: str = "sha-existant") -> tuple[int, bytes]:
+def _file_response(
+    entries: list[dict[str, Any]], sha: str = "sha-existant"
+) -> tuple[int, bytes]:
     """Réponse de l'API Contents décrivant un fichier existant."""
     content = json.dumps({"updated_at": None, "entries": entries})
     document = {
@@ -93,7 +95,9 @@ def test_update_sends_the_existing_sha() -> None:
     """L'API GitHub exige le sha courant pour remplacer un fichier existant."""
     transport = FakeGitHub(
         [
-            _file_response([{"received_at": NOW.isoformat(), "report": _report("2026-10-30")}]),
+            _file_response(
+                [{"received_at": NOW.isoformat(), "report": _report("2026-10-30")}]
+            ),
             (200, b"{}"),
         ]
     )
@@ -116,7 +120,10 @@ def test_same_session_replaces_the_previous_entry() -> None:
             (200, b"{}"),
         ]
     )
-    assert _publisher(transport).send("cycle_trading", _report("2026-11-02", 102_000.0)) is True
+    assert (
+        _publisher(transport).send("cycle_trading", _report("2026-11-02", 102_000.0))
+        is True
+    )
 
     published = json.loads(
         base64.b64decode(transport.calls[1]["body"]["content"]).decode("utf-8")

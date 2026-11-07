@@ -302,7 +302,6 @@ def test_shield_sword_params_validation() -> None:
     assert params.sword_trend_sma == 100
     assert params.sword_stop_atr_multiplier == 5.0
     assert params.sword_max_loss_pct == 0.12
-    assert params.risk_free_rate_annual == 0.045
     assert params.shield_symbol == "SGOV"
 
     strategy = ShieldSwordStrategy()
@@ -310,31 +309,79 @@ def test_shield_sword_params_validation() -> None:
     assert strategy.warmup_bars == 201
 
 
-def test_shield_sword_respects_rebalance_window(bars_factory) -> None:
-    n = 260
-    closes = _rising_closes(n, 1.005)
-    bars = bars_factory(closes)
-    bench_bars = bars_factory(_rising_closes(n, 1.002))
+def _month_start_indices(bars: pd.DataFrame) -> list[int]:
+    """Indices des premiers jours de bourse de chaque mois présents dans les barres."""
+    index = bars.index
+    return [i for i in range(1, len(index)) if index[i].month != index[i - 1].month]
+
+
+def _first_rebalance_index(strategy: ShieldSwordStrategy, bars: pd.DataFrame) -> int:
+    """Premier rebalancement exploitable : première ouverture de mois après le warm-up."""
+    for position in _month_start_indices(bars):
+        if position >= strategy.warmup_bars:
+            return position
+    raise AssertionError("aucun début de mois après le warm-up dans ces barres")
+
+
+def test_shield_sword_rebalances_on_first_session_of_month(bars_factory) -> None:
+    """Le rebalancement tombe le premier jour de bourse du mois, jamais à un offset de fenêtre."""
+    n = 420
+    bars = bars_factory(_rising_closes(n, 1.005), start="2023-01-02")
+    bench = bars_factory(_rising_closes(n, 1.002), start="2023-01-02")
 
     strategy = ShieldSwordStrategy(
         ShieldSwordParams(sword_rebalance_days=20, sword_trend_sma=100),
-        benchmark=bench_bars,
+        benchmark=bench,
     )
-    enriched = strategy.generate_signals(bars, symbol="OFFENSIVE")
-    signals = enriched["signal"]
+    signals = strategy.generate_signals(bars, symbol="OFFENSIVE")["signal"]
 
-    # Warm-up bars are HOLD
-    assert (signals.iloc[: strategy.warmup_bars] == SignalType.HOLD).all()
+    month_starts = set(_month_start_indices(bars))
+    active = [i for i, value in enumerate(signals) if value is not SignalType.HOLD]
 
-    # The first bar after warmup (warmup_bars) is a rebalance day -> BUY
-    first_rebal_idx = strategy.warmup_bars
-    assert signals.iloc[first_rebal_idx] == SignalType.BUY
+    assert active, "aucun rebalancement : la stratégie est inerte"
+    assert set(active) <= month_starts, "un rebalancement tombe hors d'un début de mois"
+    # Après le warm-up, chaque ouverture de mois est un rebalancement.
+    expected = {i for i in month_starts if i >= strategy.warmup_bars}
+    assert set(active) == expected
 
-    # In between rebalances (days 1 to 19), signals are strictly HOLD
-    assert (signals.iloc[first_rebal_idx + 1 : first_rebal_idx + 20] == SignalType.HOLD).all()
 
-    # At the next rebalance (first_rebal_idx + 20), since it's already held, it emits HOLD (no churn)
-    assert signals.iloc[first_rebal_idx + 20] == SignalType.HOLD
+def test_shield_sword_signals_are_window_independent(bars_factory) -> None:
+    """Fenêtre glissante : les dates de rebalancement ne se décalent pas d'un cycle à l'autre."""
+    n = 500
+    bars = bars_factory(_rising_closes(n, 1.005), start="2023-01-02")
+    bench = bars_factory(_rising_closes(n, 1.002), start="2023-01-02")
+
+    def active_dates(window_start: int, window_end: int) -> set[pd.Timestamp]:
+        sliced = bars.iloc[window_start:window_end]
+        sliced_bench = bench.iloc[window_start:window_end]
+        strategy = ShieldSwordStrategy(
+            ShieldSwordParams(sword_rebalance_days=20, sword_trend_sma=100),
+            benchmark=sliced_bench,
+        )
+        signals = strategy.generate_signals(sliced, symbol="OFFENSIVE")["signal"]
+        return {stamp for stamp, value in signals.items() if value is not SignalType.HOLD}
+
+    wide = active_dates(0, 400)
+    slid = active_dates(5, 400)  # même fin, la fenêtre a glissé de 5 séances
+    assert wide, "aucun rebalancement détecté sur la fenêtre de référence"
+    assert wide == slid, "les dates de rebalancement dépendent du début de la fenêtre"
+
+
+def test_shield_sword_buys_on_every_rebalance_while_selected(bars_factory) -> None:
+    """Aucun état interne « déjà détenu » : chaque rebalancement réémet BUY."""
+    n = 420
+    bars = bars_factory(_rising_closes(n, 1.006), start="2023-01-02")
+    bench = bars_factory(_rising_closes(n, 1.002), start="2023-01-02")
+
+    strategy = ShieldSwordStrategy(
+        ShieldSwordParams(sword_rebalance_days=20, sword_trend_sma=100),
+        benchmark=bench,
+    )
+    signals = strategy.generate_signals(bars, symbol="OFFENSIVE")["signal"]
+
+    buys = [i for i, value in enumerate(signals) if value is SignalType.BUY]
+    assert len(buys) >= 2, "un actif en tendance doit être réacheté à chaque rebalancement"
+    assert set(buys) <= set(_month_start_indices(bars))
 
 
 def test_shield_sword_shield_symbols_ignored(bars_factory) -> None:
@@ -370,9 +417,13 @@ def test_shield_sword_top_n_selection(bars_factory) -> None:
     )
     strategy.set_universe(universe)
 
-    rebal_idx = strategy.warmup_bars
-    sig_fast1 = strategy.generate_signals(bars_fast1, symbol="FAST1")["signal"].iloc[rebal_idx]
-    sig_fast2 = strategy.generate_signals(bars_fast2, symbol="FAST2")["signal"].iloc[rebal_idx]
+    rebal_idx = _first_rebalance_index(strategy, bars_fast1)
+    sig_fast1 = strategy.generate_signals(bars_fast1, symbol="FAST1")["signal"].iloc[
+        rebal_idx
+    ]
+    sig_fast2 = strategy.generate_signals(bars_fast2, symbol="FAST2")["signal"].iloc[
+        rebal_idx
+    ]
     sig_mid = strategy.generate_signals(bars_mid, symbol="MID")["signal"].iloc[rebal_idx]
     sig_slow = strategy.generate_signals(bars_slow, symbol="SLOW")["signal"].iloc[rebal_idx]
 
@@ -380,8 +431,8 @@ def test_shield_sword_top_n_selection(bars_factory) -> None:
     assert sig_fast1 == SignalType.BUY
     assert sig_fast2 == SignalType.BUY
     # MID and SLOW were not in Top 2
-    assert sig_mid != SignalType.BUY
-    assert sig_slow != SignalType.BUY
+    assert sig_mid is not SignalType.BUY
+    assert sig_slow is not SignalType.BUY
 
 
 def test_shield_sword_bear_market_100pct_shield(bars_factory) -> None:
@@ -396,10 +447,10 @@ def test_shield_sword_bear_market_100pct_shield(bars_factory) -> None:
     strategy = ShieldSwordStrategy(benchmark=bench)
     strategy.set_universe(universe)
 
-    rebal_idx = strategy.warmup_bars
+    rebal_idx = _first_rebalance_index(strategy, bars_fast)
     sig = strategy.generate_signals(bars_fast, symbol="FAST")["signal"].iloc[rebal_idx]
     # Because SPY < SMA(200), no offensive buy
-    assert sig == SignalType.HOLD
+    assert sig is not SignalType.BUY
 
 
 def test_shield_immunity_from_stops_and_take_profit() -> None:
@@ -428,7 +479,8 @@ def test_shield_immunity_from_stops_and_take_profit() -> None:
     assert decision.intent.stop_price is None
 
     # Open position in SGOV: trailing stop and take profit must be None
-    pos_sgov = Position(symbol="SGOV", qty=700.0, avg_entry_price=100.0, current_price=125.0)
+    pos_sgov = Position(
+        symbol="SGOV", qty=700.0, avg_entry_price=100.0, current_price=125.0
+    )
     assert engine.update_trailing_stop(pos_sgov, price=125.0, atr=0.10) is None
     assert engine.evaluate_partial_take_profit(pos_sgov, price=125.0, now=now) is None
-

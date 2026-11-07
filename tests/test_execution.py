@@ -417,7 +417,9 @@ class _AssetNotFound(Exception):
     code = 40410000
 
 
-def _client_with_asset(settings: Settings, fake_trading: FakeTradingClient, responder: object) -> AlpacaPaperClient:
+def _client_with_asset(
+    settings: Settings, fake_trading: FakeTradingClient, responder: object
+) -> AlpacaPaperClient:
     fake_trading.get_asset = responder  # type: ignore[attr-defined]
     return AlpacaPaperClient(
         settings, trading_client=fake_trading, data_client=FakeDataClient()

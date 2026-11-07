@@ -1,12 +1,13 @@
 """Stratégie Bouclier + Épée (Core-Satellite CPPI).
 
 Philosophie :
-* 70 % du portefeuille en actifs ultra-défensifs sans risque (« Le Bouclier ») :
-  Bons du Trésor US court terme (SGOV) ou rémunération au taux sans risque
-  (4.5 % annuel) pour sanctuariser le capital avec 0 drawdown.
+* 70 % du portefeuille dans l'actif du Bouclier (« Le Bouclier ») : un support
+  défensif réel (SGOV, Bons du Trésor US court terme), acheté sur le marché et
+  sans stop. Le cash nu ne rapporte rien chez le courtier paper : c'est le
+  titre qui porte le rendement sans risque.
 * 30 % répartis équitablement sur le Top 3 des actions en forte tendance (« L'Épée »),
   soit 10 % du portefeuille par action.
-* Rebalancement lent (tous les 20 jours de bourse, soit 1 fois par mois) :
+* Rebalancement lent (le premier jour de bourse du mois, soit ~20 séances) :
   - Sélection Top 3 sur SMA(100), rendement 60j > 0 et score momentum composite
     (0.6 * r60 + 0.4 * r120) / vol60.
   - Conservation stricte des 3 lignes en HOLD entre deux rebalancements.
@@ -20,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import date, datetime
-from typing import ClassVar
+from typing import ClassVar, Final
 
 import numpy as np
 import pandas as pd
@@ -28,6 +29,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trading_bot.data.loader import compute_atr
 from trading_bot.strategies.base import SignalType, Strategy, StrategyError
+
+#: Séances de bourse par mois, pour convertir ``sword_rebalance_days`` en mois.
+_SESSIONS_PER_MONTH: Final[float] = 21.0
 
 
 class ShieldSwordParams(BaseModel):
@@ -47,7 +51,6 @@ class ShieldSwordParams(BaseModel):
     atr_length: int = Field(14, ge=2, le=100)
     sword_stop_atr_multiplier: float = Field(5.0, ge=1.0, le=20.0)
     sword_max_loss_pct: float = Field(0.12, ge=0.01, le=0.50)
-    risk_free_rate_annual: float = Field(0.045, ge=0.0, le=0.20)
     shield_symbol: str = "SGOV"
     shield_symbols: tuple[str, ...] = ("SGOV", "BRK.B", "WMT", "KO")
 
@@ -107,11 +110,59 @@ class ShieldSwordStrategy(Strategy):
             + 1
         )
 
+    @property
+    def rebalance_period_months(self) -> int:
+        """Nombre de mois entre deux rebalancements, dérivé de ``sword_rebalance_days``.
+
+        Le rebalancement est ancré sur le calendrier (premier jour de bourse du
+        mois) et non sur la fenêtre de barres fournie : c'est la seule façon
+        qu'une même date soit un rebalancement en backtest **et** en live, où la
+        fenêtre glisse à chaque cycle. ``sword_rebalance_days`` (20 séances par
+        défaut, soit un mois) est converti en mois ; en dessous d'un mois, la
+        périodicité retombe sur mensuel.
+        """
+        return max(1, round(self._params.sword_rebalance_days / _SESSIONS_PER_MONTH))
+
+    def _rebalance_mask(self, index: pd.DatetimeIndex) -> np.ndarray:
+        """Vrai pour le premier jour de bourse d'un mois de rebalancement.
+
+        Le premier point de l'index n'est jamais retenu : sans barre
+        précédente, rien ne prouve qu'il ouvre un mois (une fenêtre glissante
+        peut commencer en milieu de mois).
+        """
+        months = np.asarray(index.year) * 12 + np.asarray(index.month)
+        mask = np.zeros(len(index), dtype=bool)
+        if len(index) > 1:
+            mask[1:] = months[1:] != months[:-1]
+        period = self.rebalance_period_months
+        if period > 1:
+            mask &= months % period == 0
+        return mask
+
+    @staticmethod
+    def _is_eligible(
+        close: float,
+        sma: float,
+        benchmark_bull: bool,
+        ret_fast: float,
+        composite: float,
+    ) -> bool:
+        """Tendance haussière, momentum positif et marché porteur : critères d'entrée."""
+        if not benchmark_bull:
+            return False
+        if not (
+            pd.notna(close) and pd.notna(sma) and pd.notna(ret_fast) and pd.notna(composite)
+        ):
+            return False
+        return bool(close > sma and ret_fast > 0.0 and composite > 0.0)
+
     def set_start_date(self, start_date: datetime | date | str | None) -> None:
         """Fixe la date de début de simulation pour aligner les rebalancements."""
         if start_date is not None:
             ts = pd.Timestamp(start_date)
-            self._start_date = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+            self._start_date = (
+                ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+            )
         else:
             self._start_date = None
         if self._universe:
@@ -178,11 +229,13 @@ class ShieldSwordStrategy(Strategy):
             self._benchmark_close is not None
             and len(self._benchmark_close) >= self._params.benchmark_trend_sma
         ):
-            bench_sma = self._benchmark_close.rolling(self._params.benchmark_trend_sma).mean()
+            bench_sma = self._benchmark_close.rolling(
+                self._params.benchmark_trend_sma
+            ).mean()
             b_bull = self._benchmark_close > bench_sma
             bench_bull = b_bull.to_dict()
 
-        ref_index = (
+        ref_index = pd.DatetimeIndex(
             self._benchmark_close.index
             if self._benchmark_close is not None
             else sorted(set().union(*(s.index for s in scores.values())))
@@ -193,25 +246,23 @@ class ShieldSwordStrategy(Strategy):
             self._rebalance_dates = set()
             return
 
-        rebal_days = self._params.sword_rebalance_days
+        # Dates de rebalancement : ancrées sur le calendrier, donc identiques
+        # quelle que soit la profondeur de la fenêtre fournie (live compris).
         start_ts = self._start_date
-
-        if start_ts is not None:
-            sub_index = [ts for ts in ref_index if ts >= start_ts]
-            if not sub_index:
-                sub_index = list(ref_index[self.warmup_bars :])
-            rebal_dates_list = [sub_index[i] for i in range(0, len(sub_index), rebal_days)]
-        else:
-            rebal_dates_list = [
-                ref_index[i] for i in range(self.warmup_bars, len(ref_index), rebal_days)
-            ]
+        rebal_dates_list = [
+            stamp
+            for stamp, is_rebalance in zip(
+                ref_index, self._rebalance_mask(ref_index), strict=True
+            )
+            if is_rebalance and (start_ts is None or stamp >= start_ts)
+        ]
 
         rebal_dates = set(rebal_dates_list)
         self._top_by_date = {}
 
         for dt in rebal_dates_list:
             # Marché baissier sur SPY : zéro action offensive éligible (100 % Bouclier)
-            if bench_bull and not bench_bull.get(dt, True):
+            if bench_bull and not bench_bull.get(dt, False):
                 self._top_by_date[dt] = set()
                 continue
 
@@ -219,21 +270,14 @@ class ShieldSwordStrategy(Strategy):
             for sym, sc in scores.items():
                 if dt not in sc.index:
                     continue
-                score_val = sc.loc[dt]
-                close_val = closes[sym].loc[dt]
-                sma_val = smas[sym].loc[dt]
-                r60_val = ret60s[sym].loc[dt]
-
-                if (
-                    pd.notna(score_val)
-                    and pd.notna(close_val)
-                    and pd.notna(sma_val)
-                    and pd.notna(r60_val)
-                    and close_val > sma_val
-                    and r60_val > 0.0
-                    and score_val > 0.0
+                if self._is_eligible(
+                    float(closes[sym].loc[dt]),
+                    float(smas[sym].loc[dt]),
+                    True,
+                    float(ret60s[sym].loc[dt]),
+                    float(sc.loc[dt]),
                 ):
-                    candidates.append((float(score_val), sym))
+                    candidates.append((float(sc.loc[dt]), sym))
 
             candidates.sort(key=lambda item: item[0], reverse=True)
             top_syms = {item[1] for item in candidates[: self._params.sword_top_n]}
@@ -246,8 +290,12 @@ class ShieldSwordStrategy(Strategy):
         out = bars.copy()
         close = out["close"].astype(float)
         out["sma_100"] = close.rolling(self._params.sword_trend_sma).mean()
-        r60 = (close - close.shift(self._params.fast_mom)) / close.shift(self._params.fast_mom)
-        r120 = (close - close.shift(self._params.slow_mom)) / close.shift(self._params.slow_mom)
+        r60 = (close - close.shift(self._params.fast_mom)) / close.shift(
+            self._params.fast_mom
+        )
+        r120 = (close - close.shift(self._params.slow_mom)) / close.shift(
+            self._params.slow_mom
+        )
         v60 = close.pct_change().rolling(self._params.vol_length).std()
         out["composite_mom"] = (0.6 * r60 + 0.4 * r120) / v60
         out["ret_60"] = r60
@@ -278,85 +326,50 @@ class ShieldSwordStrategy(Strategy):
         return super().generate_signals(bars, symbol=symbol)
 
     def compute_signals(self, prepared: pd.DataFrame) -> pd.Series:
-        """Génère les signaux BUY / SELL / HOLD selon le calendrier de rebalancement mensuel."""
+        """Génère BUY / SELL / HOLD selon le calendrier de rebalancement.
+
+        La règle est **sans état** : à chaque date de rebalancement, un actif
+        retenu dans le Top N reçoit BUY, les autres SELL. Supprimer un BUY au
+        motif qu'on détenait déjà la ligne ferait diverger le live du backtest :
+        le portefeuille réel peut très bien ne pas la détenir (cycle manqué,
+        position vendue par un stop, bot démarré plus tard). En backtest comme
+        en live, le moteur de risque rejette un BUY sur une position déjà
+        ouverte — c'est lui qui garantit l'absence de doublon, pas la stratégie.
+        """
         sym = self._current_symbol
+        signals = pd.Series(SignalType.HOLD, index=prepared.index, dtype=object)
+
+        # Si le symbole fait partie du Bouclier (Safe Haven / SGOV), la stratégie offensive ne le trade pas
+        if sym and (
+            sym in self._params.shield_symbols or sym == self._params.shield_symbol
+        ):
+            return signals
+
         close = prepared["close"].astype(float)
         sma = prepared["sma_100"]
         bench_bull = prepared.get("benchmark_bull")
         if bench_bull is None:
             bench_bull = pd.Series(True, index=prepared.index)
+        composite = prepared["composite_mom"]
+        ret_fast = prepared.get("ret_60", pd.Series(1.0, index=prepared.index))
 
-        signals = pd.Series(SignalType.HOLD, index=prepared.index, dtype=object)
-
-        # Si le symbole fait partie du Bouclier (Safe Haven / SGOV), la stratégie offensive ne le trade pas
-        if sym and (sym in self._params.shield_symbols or sym == self._params.shield_symbol):
-            return signals
-
-        top_by_date: dict[pd.Timestamp, set[str]] = getattr(self, "_top_by_date", {})
-        rebal_dates: set[pd.Timestamp] = getattr(self, "_rebalance_dates", set())
-
-        # Cas 1 : Mode isolé sans univers transversal (ex: test unitaire d'un seul ticker)
-        if not top_by_date:
-            composite = prepared["composite_mom"]
-            ret60 = prepared.get("ret_60", pd.Series(1.0, index=prepared.index))
-            held = False
-            for i, _dt in enumerate(prepared.index):
-                if i < self.warmup_bars:
-                    continue
-                is_rebal = (i - self.warmup_bars) % self._params.sword_rebalance_days == 0
-                c_val = close.iloc[i]
-                s_val = sma.iloc[i]
-                b_val = bool(bench_bull.iloc[i])
-                r_val = ret60.iloc[i]
-                m_val = composite.iloc[i]
-
-                uptrend = (
-                    pd.notna(s_val)
-                    and c_val > s_val
-                    and b_val
-                    and pd.notna(r_val)
-                    and r_val > 0.0
-                )
-
-                if is_rebal:
-                    if uptrend and pd.notna(m_val) and m_val > 0.0:
-                        if not held:
-                            signals.iloc[i] = SignalType.BUY
-                            held = True
-                        else:
-                            signals.iloc[i] = SignalType.HOLD
-                    else:
-                        if held:
-                            signals.iloc[i] = SignalType.SELL
-                            held = False
-                else:
-                    # Entre deux rebalancements : STRICTEMENT HOLD
-                    signals.iloc[i] = SignalType.HOLD
-            return signals
-
-        # Cas 2 : Mode multi-symboles complet avec sélection Top N
-        held = False
-        for i, dt in enumerate(prepared.index):
-            if i < self.warmup_bars:
+        for position in np.flatnonzero(self._rebalance_mask(prepared.index)):
+            if position < self.warmup_bars:
                 continue
-
-            if dt in rebal_dates:
-                current_top = top_by_date.get(dt, set())
-                if sym in current_top:
-                    if not held:
-                        signals.iloc[i] = SignalType.BUY
-                        held = True
-                    else:
-                        signals.iloc[i] = SignalType.HOLD
-                else:
-                    if held:
-                        signals.iloc[i] = SignalType.SELL
-                        held = False
-                    else:
-                        signals.iloc[i] = SignalType.HOLD
+            stamp = prepared.index[position]
+            if self._top_by_date:
+                selected = sym in self._top_by_date.get(stamp, set())
             else:
-                # Entre deux dates de rebalancement (jours 1 à 19) : STRICTEMENT HOLD
-                signals.iloc[i] = SignalType.HOLD
+                # Mode isolé (un seul ticker, pas de classement transversal) :
+                # mêmes critères d'éligibilité que le classement Top N.
+                selected = self._is_eligible(
+                    float(close.iloc[position]),
+                    float(sma.iloc[position]),
+                    bool(bench_bull.iloc[position]),
+                    float(ret_fast.iloc[position]),
+                    float(composite.iloc[position]),
+                )
+            signals.iloc[position] = SignalType.BUY if selected else SignalType.SELL
 
         return signals
 
@@ -393,7 +406,6 @@ class ShieldSwordStrategy(Strategy):
             "benchmark_trend_sma": str(self._params.benchmark_trend_sma),
             "stop_atr_multiplier": str(self._params.sword_stop_atr_multiplier),
             "max_loss_pct": f"{self._params.sword_max_loss_pct:.0%}",
-            "risk_free_rate_annual": f"{self._params.risk_free_rate_annual:.1%}",
             "warmup_bars": str(self.warmup_bars),
         }
 

@@ -81,9 +81,15 @@ class HistoryStore:
                 last_session = last.get("session_date")
                 last_mode = last.get("mode", "full")
                 last_ts = last.get("timestamp") or last.get("recorded_at", "")
-                last_hour = str(last_ts)[11:13] if len(str(last_ts)) >= 13 and "T" in str(last_ts) else ""
+                last_hour = (
+                    str(last_ts)[11:13]
+                    if len(str(last_ts)) >= 13 and "T" in str(last_ts)
+                    else ""
+                )
 
-                same_full = mode == "full" and last_session == session and last_mode == "full"
+                same_full = (
+                    mode == "full" and last_session == session and last_mode == "full"
+                )
                 same_watch = (
                     mode == "watch_only"
                     and last_session == session
@@ -96,7 +102,10 @@ class HistoryStore:
                 elif mode == "full":
                     # Si une entrée 'full' existait plus tôt pour la séance, on la remplace
                     for idx in range(len(entries) - 1, -1, -1):
-                        if entries[idx].get("session_date") == session and entries[idx].get("mode", "full") == "full":
+                        if (
+                            entries[idx].get("session_date") == session
+                            and entries[idx].get("mode", "full") == "full"
+                        ):
                             entries[idx] = entry
                             replaced = True
                             break

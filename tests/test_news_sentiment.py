@@ -310,7 +310,10 @@ def test_panic_exit_requires_the_critical_flag() -> None:
 def test_panic_exit_is_inert_without_a_news_signal() -> None:
     """Filtre inactif : le comportement d'origine est strictement préservé."""
     engine = RiskEngine()
-    assert engine.evaluate_news_panic_exit(make_position(), news=None, price=95.0, now=NOW) is None
+    assert (
+        engine.evaluate_news_panic_exit(make_position(), news=None, price=95.0, now=NOW)
+        is None
+    )
 
 
 def test_panic_exit_ignores_an_empty_position() -> None:
@@ -764,18 +767,23 @@ def test_entry_without_news_is_unchanged() -> None:
     assert decision.approved
 
 
-def test_backtest_runner_never_consults_news() -> None:
-    """Le backtest ignore le filtre, sous peine de biais de look-ahead.
+def test_backtest_runner_cannot_fetch_news_by_itself() -> None:
+    """Le backtest n'obtient jamais d'actualités de lui-même (garde-fou anti look-ahead).
 
-    Les articles d'aujourd'hui ne sont pas ceux qui existaient à l'époque, et
-    un modèle actuel « connaît » l'issue. Ce test est un garde-fou : y câbler
-    le filtre exige de le faire sciemment, avec des données point-in-time.
+    Les articles d'aujourd'hui ne sont pas ceux qui existaient à l'époque, et un
+    modèle actuel « connaît » l'issue. Le moteur n'importe donc aucun module
+    d'actualités : le seul chemin possible est un ``news_hook`` injecté par
+    l'appelant, avec des données point-in-time, et son défaut est inerte —
+    l'équivalent de ``NEWS_FILTER_ENABLED=false`` en live.
     """
     from trading_bot.backtest import runner as backtest_runner
 
-    source = inspect.getsource(backtest_runner).lower()
-    assert "news" not in source
-    assert "sentiment" not in source
+    source = inspect.getsource(backtest_runner)
+    assert "news_sentiment" not in source
+    assert "NewsSentimentAnalyzer" not in source
+    assert "OpenRouter" not in source
+    signature = inspect.signature(backtest_runner.BacktestRunner.run)
+    assert signature.parameters["news_hook"].default is None
 
 
 # ---------------------------------------------------------------------------

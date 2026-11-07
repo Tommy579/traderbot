@@ -152,3 +152,27 @@ def test_invalid_ticker_rejected() -> None:
 def test_lookback_must_be_sufficient() -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, lookback_days=10)
+
+
+def test_explicit_risk_config_survives_default_flat_fields() -> None:
+    """Un RiskConfig passé explicitement n'est pas écrasé par les défauts plats.
+
+    ``safe_haven_enabled`` et ``safe_haven_symbols`` ont une valeur par défaut
+    non nulle au niveau racine : sans contrôle des champs réellement fournis,
+    ils écrasent silencieusement tout profil de risque construit à la main.
+    """
+    settings = Settings(
+        _env_file=None,
+        risk=RiskConfig(safe_haven_enabled=False, max_open_positions=2),
+    )
+    assert settings.risk.safe_haven_enabled is False
+    assert settings.risk.max_open_positions == 2
+
+
+def test_environment_flat_override_still_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Une variable d'environnement plate continue de piloter le profil de risque."""
+    monkeypatch.setenv("SAFE_HAVEN_ENABLED", "false")
+    monkeypatch.setenv("MAX_OPEN_POSITIONS", "7")
+    settings = Settings(_env_file=None)
+    assert settings.risk.safe_haven_enabled is False
+    assert settings.risk.max_open_positions == 7

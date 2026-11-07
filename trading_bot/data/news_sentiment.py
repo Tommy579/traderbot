@@ -497,7 +497,9 @@ class NewsSentimentAnalyzer:
             )
 
         if status != 200:
-            LOGGER.warning("OpenRouter a répondu %s pour %s: %s", status, symbol, body[:200])
+            LOGGER.warning(
+                "OpenRouter a répondu %s pour %s: %s", status, symbol, body[:200]
+            )
             return (
                 NewsAssessment.neutral(
                     symbol,

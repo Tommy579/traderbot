@@ -199,7 +199,9 @@ def test_partial_take_profit_and_break_even() -> None:
     assert state_dump["partial_tp_taken"] is True
     assert state_dump["stop_price"] == 100.0
 
-    pos_restored = Position(symbol="NVDA", qty=50.0, avg_entry_price=100.0, current_price=135.0)
+    pos_restored = Position(
+        symbol="NVDA", qty=50.0, avg_entry_price=100.0, current_price=135.0
+    )
     pos_restored.apply_stop_state(state_dump)
     assert pos_restored.partial_tp_taken is True
     assert pos_restored.stop_price == 100.0
@@ -249,7 +251,9 @@ def test_overweight_trimming() -> None:
         current_price=100.0,
     )
     account.positions["BRK.B"] = pos_sh
-    assert risk.evaluate_overweight_trim(pos_sh, price=100.0, account=account, now=NOW) is None
+    assert (
+        risk.evaluate_overweight_trim(pos_sh, price=100.0, account=account, now=NOW) is None
+    )
 
 
 def test_equity_hard_floor_breach() -> None:
@@ -295,7 +299,9 @@ def test_equity_hard_floor_breach() -> None:
     assert entry_dec.code is RejectionCode.EQUITY_FLOOR_BREACHED
 
     # La liquidation globale doit être approuvée par le RiskEngine
-    flattens = risk.flatten_decisions(account, prices={"NVDA": 100.0}, now=NOW, reason="circuit_breaker")
+    flattens = risk.flatten_decisions(
+        account, prices={"NVDA": 100.0}, now=NOW, reason="circuit_breaker"
+    )
     assert len(flattens) == 1
     assert flattens[0].approved
     assert flattens[0].intent is not None
@@ -304,7 +310,9 @@ def test_equity_hard_floor_breach() -> None:
     assert flattens[0].intent.qty == 500.0
 
 
-def test_cmd_withdraw_symbol_and_pct(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cmd_withdraw_symbol_and_pct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Vérifie la commande CLI withdraw --symbol --pct."""
     state_file = tmp_path / "state.json"
     store = StateStore(state_file)
@@ -340,14 +348,18 @@ def test_cmd_withdraw_symbol_and_pct(tmp_path: Path, monkeypatch: pytest.MonkeyP
     )
     exit_code = cmd_withdraw(args)
     assert exit_code == 0
-    assert len(broker.orders) == 2  # vente de 25 titres + remise du stop pour les 25 restants
+    assert (
+        len(broker.orders) == 2
+    )  # vente de 25 titres + remise du stop pour les 25 restants
     sell_order = broker.orders[0]
     assert sell_order.symbol == "NVDA"
     assert sell_order.side is Side.SELL
     assert sell_order.qty == 25.0
 
 
-def test_cmd_withdraw_free_cash_updates_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cmd_withdraw_free_cash_updates_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Vérifie la commande CLI withdraw --free-cash qui vend les safe havens et met à jour .env."""
     env_file = tmp_path / ".env"
     env_file.write_text("CASH_BUFFER_PCT=0.10\n", encoding="utf-8")

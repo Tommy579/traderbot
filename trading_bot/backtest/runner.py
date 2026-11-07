@@ -21,7 +21,7 @@ mêmes données produisent le même résultat au centime près.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Final
@@ -39,7 +39,9 @@ from trading_bot.data.loader import (
 from trading_bot.risk.engine import (
     AccountState,
     HaltEvent,
+    NewsSignal,
     Position,
+    RiskDecision,
     RiskEngine,
 )
 from trading_bot.strategies.base import SignalType, Strategy, StrategyError
@@ -84,6 +86,7 @@ class BacktestResult:
     initial_equity: float
     symbols: tuple[str, ...]
     strategy_name: str
+    final_positions: Mapping[str, float] = field(default_factory=dict)
 
     def trades_frame(self) -> pd.DataFrame:
         """Retourne les trades sous forme de DataFrame (une ligne par trade)."""
@@ -127,6 +130,7 @@ class BacktestResult:
             "strategy": self.strategy_name,
             "symbols": list(self.symbols),
             "initial_equity": self.initial_equity,
+            "final_positions": dict(self.final_positions),
             "metrics": {key: _json_number(value) for key, value in self.metrics.items()},
             "trades": [
                 {
@@ -190,6 +194,7 @@ class _Simulation:
     trades: list[Trade] = field(default_factory=list)
     open_trades: dict[str, _OpenTrade] = field(default_factory=dict)
     marks: dict[str, float] = field(default_factory=dict)
+    atrs: dict[str, float] = field(default_factory=dict)
     halts: list[HaltEvent] = field(default_factory=list)
     equity_rows: list[dict[str, object]] = field(default_factory=list)
     entry_candidates: int = 0
@@ -198,10 +203,12 @@ class _Simulation:
     exit_count: int = 0
     is_shield_sword: bool = False
     shield_symbol: str = "SGOV"
+    shield_allocation_pct: float = 0.70
     sword_target_weight: float = 0.10
     sword_stop_atr_multiplier: float = 5.0
     sword_max_loss_pct: float = 0.12
-    risk_free_rate_annual: float = 0.045
+    cash_yield_pct: float = 0.0
+    news_hook: Callable[[str, pd.Timestamp], NewsSignal | None] | None = None
 
     def process_bar(
         self,
@@ -217,28 +224,36 @@ class _Simulation:
 
         position = self.account.positions.get(symbol)
         exited_this_bar = False
+        now = timestamp.to_pydatetime()
         if position is not None:
-            if signal_prev is SignalType.SELL:
+            # Sortie d'urgence sur actualité critique : même primauté qu'en
+            # live, où elle passe avant le stop (sur un krach, le stop glisse).
+            news = self.news_hook(symbol, timestamp) if self.news_hook is not None else None
+            panic = self.risk.evaluate_news_panic_exit(
+                position, news=news, price=float(row["open"]), now=now
+            )
+            if panic is not None:
+                self._execute_sell(panic, timestamp, float(row["open"]))
+                exited_this_bar = True
+            elif signal_prev is SignalType.SELL:
                 self._exit_at(symbol, timestamp, float(row["open"]), "strategy_exit")
                 exited_this_bar = True
-            else:
-                is_shield_asset = self.is_shield_sword and (
-                    symbol == self.shield_symbol
-                    or symbol in self.risk.config.safe_haven_symbols
+            elif position.stop_price is not None:
+                # Le stop s'applique à toute position qui en porte un : en live,
+                # la vigie contrôle aussi les safe havens. Le Bouclier, lui,
+                # n'a pas de stop (le moteur de risque le lui refuse).
+                stop = position.stop_price
+                trailing = (
+                    position.initial_stop_price is not None
+                    and stop > position.initial_stop_price
                 )
-                if not is_shield_asset and position.stop_price is not None:
-                    stop = position.stop_price
-                    trailing = (
-                        position.initial_stop_price is not None
-                        and stop > position.initial_stop_price
-                    )
-                    label = "trailing_stop" if trailing else "stop_loss"
-                    if float(row["open"]) <= stop:
-                        self._exit_at(symbol, timestamp, float(row["open"]), "stop_gap")
-                        exited_this_bar = True
-                    elif float(row["low"]) <= stop:
-                        self._exit_at(symbol, timestamp, stop, label)
-                        exited_this_bar = True
+                label = "trailing_stop" if trailing else "stop_loss"
+                if float(row["open"]) <= stop:
+                    self._exit_at(symbol, timestamp, float(row["open"]), "stop_gap")
+                    exited_this_bar = True
+                elif float(row["low"]) <= stop:
+                    self._exit_at(symbol, timestamp, stop, label)
+                    exited_this_bar = True
 
         if (
             signal_prev is SignalType.BUY
@@ -253,16 +268,18 @@ class _Simulation:
             meta = self.open_trades.get(symbol)
             if meta is not None and meta.entry_time != timestamp:
                 meta.bars_held += 1
-            if not self.is_shield_sword:
-                trailing_update = self.risk.update_trailing_stop(
-                    position,
-                    price=float(row["close"]),
-                    atr=float(row["atr"]) if math.isfinite(float(row["atr"])) else 0.0,
-                )
-                if trailing_update is not None:
-                    self.risk.apply_trailing_stop(self.account, trailing_update)
+            # Le trailing est proposé pour toutes les positions : c'est le
+            # moteur de risque qui l'interdit au Bouclier, pas le backtest.
+            trailing_update = self.risk.update_trailing_stop(
+                position,
+                price=float(row["close"]),
+                atr=float(row["atr"]) if math.isfinite(float(row["atr"])) else 0.0,
+            )
+            if trailing_update is not None:
+                self.risk.apply_trailing_stop(self.account, trailing_update)
 
         self.marks[symbol] = float(row["close"])
+        self.atrs[symbol] = float(row["atr"]) if math.isfinite(float(row["atr"])) else 0.0
         self.risk.mark_to_market(self.account, self.marks)
         self._recompute_equity()
 
@@ -279,14 +296,19 @@ class _Simulation:
                 self._exit_at(symbol, timestamp, reference, "circuit_breaker")
             self._recompute_equity()
 
-        drawdown = self.account.drawdown_pct
-        if self.is_shield_sword and self.account.cash > 0:
-            daily_rate = self.risk_free_rate_annual / 252.0
-            daily_interest = self.account.cash * daily_rate
-            self.account.cash += daily_interest
+        # Gestion de portefeuille de fin de barre : exactement les mêmes
+        # appels au moteur de risque que le cycle live, sur les prix de clôture.
+        self._portfolio_actions(timestamp, session_date)
+
+        if self.cash_yield_pct > 0.0 and self.account.cash > 0.0:
+            # Opt-in explicite : le compte paper Alpaca ne rémunère pas le cash,
+            # donc 0 par défaut (sinon le backtest invente du rendement).
+            daily_rate = self.cash_yield_pct / self.config.annualization_factor
+            self.account.cash *= 1.0 + daily_rate
             self.account.buying_power = self.account.cash
             self._recompute_equity()
-            drawdown = self.account.drawdown_pct
+
+        drawdown = self.account.drawdown_pct
 
         self.equity_rows.append(
             {
@@ -313,8 +335,7 @@ class _Simulation:
         open_price = float(row["open"])
         decision_price = open_price * (1.0 + self.config.slippage_pct)
         is_shield_asset = self.is_shield_sword and (
-            symbol == self.shield_symbol
-            or symbol in self.risk.config.safe_haven_symbols
+            symbol == self.shield_symbol or symbol in self.risk.config.safe_haven_symbols
         )
         if self.is_shield_sword:
             decision = self.risk.evaluate_entry(
@@ -324,8 +345,14 @@ class _Simulation:
                 account=self.account,
                 now=timestamp.to_pydatetime(),
                 session_date=session_date,
-                target_weight=self.sword_target_weight if not is_shield_asset else 0.70,
-                atr_stop_multiple=self.sword_stop_atr_multiplier if not is_shield_asset else None,
+                target_weight=(
+                    self.sword_target_weight
+                    if not is_shield_asset
+                    else self.shield_allocation_pct
+                ),
+                atr_stop_multiple=self.sword_stop_atr_multiplier
+                if not is_shield_asset
+                else None,
                 max_loss_pct=self.sword_max_loss_pct if not is_shield_asset else None,
                 is_shield=is_shield_asset,
             )
@@ -343,37 +370,14 @@ class _Simulation:
             return
 
         intent = decision.intent
-        qty = intent.qty
-        notional = qty * decision_price
-        fee = notional * self.config.commission_pct if not is_shield_asset else 0.0
-        cost = notional + fee
-        if cost > self.account.cash + _EPSILON:
-            # Le plafond de liquidités du risque ne tient pas compte des frais.
-            self.cash_skips += 1
-            return
         stop_price = intent.stop_price
         if stop_price is None and not is_shield_asset:
             raise BacktestError("entrée approuvée sans stop : invariant violé")
 
-        self.account.cash -= cost
-        self.account.buying_power = self.account.cash
-        self.account.positions[symbol] = Position(
-            symbol=symbol,
-            qty=qty,
-            avg_entry_price=decision_price,
-            current_price=decision_price,
-            stop_price=stop_price,
-            initial_stop_price=stop_price,
-            highest_price=decision_price,
-            opened_at=timestamp.to_pydatetime(),
-        )
-        self.open_trades[symbol] = _OpenTrade(
-            entry_time=timestamp,
-            entry_price=decision_price,
-            qty=qty,
-            entry_fee=fee,
-            bars_held=1,
-        )
+        # Exécution mutualisée avec le Bouclier et le cash sweep : mêmes frais,
+        # même slippage, même contrôle de liquidités pour tous les achats.
+        if not self._execute_buy(decision, timestamp, open_price):
+            return
 
         # Un stop peut être touché dès la barre d'entrée : on le simule.
         if stop_price is not None and float(row["low"]) <= stop_price:
@@ -402,35 +406,205 @@ class _Simulation:
         )
         if not decision.approved or decision.intent is None:
             raise BacktestError(f"sortie refusée par le risque: {decision.reason}")
+        self._execute_sell(decision, timestamp, reference_price)
 
-        fill_price = reference_price * (1.0 - self.config.slippage_pct)
-        proceeds = position.qty * fill_price
+    def _execute_buy(
+        self,
+        decision: RiskDecision,
+        timestamp: pd.Timestamp,
+        price: float,
+    ) -> bool:
+        """Exécute une décision d'achat approuvée (entrée, Bouclier, sweep).
+
+        Args:
+            decision: Décision approuvée portant l'``OrderIntent``.
+            timestamp: Barre d'exécution.
+            price: Prix de référence (l'ouverture ou la clôture de la barre).
+
+        Returns:
+            ``True`` si la position a été ouverte, ``False`` si les liquidités
+            ne couvrent pas le notionnel plus les frais.
+        """
+        if decision.intent is None or not decision.approved:
+            return False
+        intent = decision.intent
+        qty = intent.qty
+        fill = price * (1.0 + self.config.slippage_pct)
+        notional = qty * fill
+        fee = notional * self.config.commission_pct
+        cost = notional + fee
+        if cost > self.account.cash + _EPSILON:
+            # Le plafond de liquidités du risque ne tient pas compte des frais.
+            self.cash_skips += 1
+            return False
+
+        self.account.cash -= cost
+        self.account.buying_power = self.account.cash
+
+        existing = self.account.positions.get(intent.symbol)
+        if existing is not None:
+            # Renforcement (réajustement du Bouclier, sweep) : on ajoute à la
+            # ligne existante. Remplacer la position effacerait les titres déjà
+            # détenus sans créditer la trésorerie — la même règle qu'en live,
+            # où ``_apply_fill`` moyenne à l'entrée.
+            new_qty = existing.qty + qty
+            existing.avg_entry_price = (
+                existing.avg_entry_price * existing.qty + fill * qty
+            ) / new_qty
+            existing.qty = new_qty
+            existing.current_price = fill
+            existing.highest_price = max(existing.highest_price, fill)
+            if intent.stop_price is not None:
+                existing.stop_price = intent.stop_price
+                existing.initial_stop_price = intent.stop_price
+            meta = self.open_trades.get(intent.symbol)
+            if meta is not None:
+                meta.qty = new_qty
+                meta.entry_price = existing.avg_entry_price
+                meta.entry_fee += fee
+            return True
+
+        self.account.positions[intent.symbol] = Position(
+            symbol=intent.symbol,
+            qty=qty,
+            avg_entry_price=fill,
+            current_price=fill,
+            stop_price=intent.stop_price,
+            initial_stop_price=intent.stop_price,
+            highest_price=fill,
+            opened_at=timestamp.to_pydatetime(),
+        )
+        self.open_trades[intent.symbol] = _OpenTrade(
+            entry_time=timestamp,
+            entry_price=fill,
+            qty=qty,
+            entry_fee=fee,
+            bars_held=1,
+        )
+        return True
+
+    def _execute_sell(
+        self,
+        decision: RiskDecision,
+        timestamp: pd.Timestamp,
+        reference_price: float,
+    ) -> None:
+        """Exécute une décision de vente approuvée, totale ou partielle.
+
+        Une vente partielle (prise de profit, écrémage, complément de plancher)
+        laisse la position ouverte et ne clôt qu'une fraction du trade : frais
+        d'entrée et P&L sont répartis au prorata des titres vendus.
+        """
+        if decision.intent is None or not decision.approved:
+            return
+        intent = decision.intent
+        symbol = intent.symbol
+        position = self.account.positions.get(symbol)
+        if position is None or position.qty <= 0:
+            return
+        if not math.isfinite(reference_price) or reference_price <= 0:
+            raise BacktestError(
+                f"prix de sortie invalide pour {symbol}: {reference_price!r}"
+            )
+
+        qty = min(intent.qty, position.qty)
+        fill = reference_price * (1.0 - self.config.slippage_pct)
+        proceeds = qty * fill
         exit_fee = proceeds * self.config.commission_pct
         self.account.cash += proceeds - exit_fee
         self.account.buying_power = self.account.cash
 
-        meta = self.open_trades.pop(symbol, None)
+        meta = self.open_trades.get(symbol)
         if meta is None:
             raise BacktestError(f"métadonnées de trade absentes pour {symbol}")
-        pnl = (fill_price - meta.entry_price) * position.qty - meta.entry_fee - exit_fee
-        entry_notional = meta.entry_price * position.qty
+        entry_fee_share = meta.entry_fee * (qty / meta.qty)
+        entry_notional = meta.entry_price * qty
+        pnl = (fill - meta.entry_price) * qty - entry_fee_share - exit_fee
         self.trades.append(
             Trade(
                 symbol=symbol,
-                qty=position.qty,
+                qty=qty,
                 entry_time=meta.entry_time,
                 entry_price=meta.entry_price,
                 exit_time=timestamp,
-                exit_price=fill_price,
-                fees=meta.entry_fee + exit_fee,
+                exit_price=fill,
+                fees=entry_fee_share + exit_fee,
                 pnl=pnl,
                 return_pct=0.0 if entry_notional <= 0 else pnl / entry_notional,
-                exit_reason=reason,
+                exit_reason=intent.reason,
                 bars_held=meta.bars_held,
             )
         )
         self.exit_count += 1
-        del self.account.positions[symbol]
+
+        if qty >= position.qty - _EPSILON:
+            del self.account.positions[symbol]
+            self.open_trades.pop(symbol, None)
+        else:
+            position.qty -= qty
+            meta.qty -= qty
+            meta.entry_fee -= entry_fee_share
+
+    def _portfolio_actions(self, timestamp: pd.Timestamp, session_date: date) -> None:
+        """Gestion de portefeuille de fin de barre, identique au cycle live.
+
+        Ordre des appels : prises de profit et écrémage, reconstitution du
+        plancher de cash, financement du Bouclier, puis cash sweep. C'est celui
+        du cycle ``live`` ; seul le prix de référence diffère (clôture de barre).
+        """
+        now = timestamp.to_pydatetime()
+
+        # 1. Prises de profit partielles et écrémage des lignes surpondérées.
+        for symbol in sorted(self.account.positions):
+            position = self.account.positions.get(symbol)
+            if position is None:
+                continue
+            price = self.marks.get(symbol, position.current_price)
+            decision = self.risk.evaluate_partial_take_profit(
+                position, price=price, now=now
+            )
+            if decision is None:
+                decision = self.risk.evaluate_overweight_trim(
+                    position, price=price, account=self.account, now=now
+                )
+            if decision is not None:
+                self._execute_sell(decision, timestamp, price)
+        self._recompute_equity()
+
+        # 2. Reconstitution du plancher de cash retirable.
+        for decision in self.risk.evaluate_safe_haven_cash_floor_reconstitution(
+            self.account, self.marks, now=now
+        ):
+            symbol = decision.intent.symbol if decision.intent is not None else ""
+            price = self.marks.get(symbol, 0.0)
+            if price > 0.0:
+                self._execute_sell(decision, timestamp, price)
+
+        # 3. Bouclier : financement du poids cible (pas de stop, pas de signal).
+        if self.is_shield_sword and self.shield_allocation_pct > 0.0:
+            price = self.marks.get(self.shield_symbol, 0.0)
+            if price > 0.0:
+                allocation = self.risk.evaluate_shield_allocation(
+                    self.account,
+                    symbol=self.shield_symbol,
+                    price=price,
+                    target_weight=self.shield_allocation_pct,
+                    now=now,
+                )
+                if allocation is not None:
+                    self._execute_buy(allocation, timestamp, price)
+
+        # 4. Cash sweep vers la poche de repli.
+        for decision in self.risk.evaluate_cash_sweep(
+            self.account, self.marks, now=now, atrs=self.atrs
+        ):
+            if decision.intent is None:
+                continue
+            price = self.marks.get(decision.intent.symbol, 0.0)
+            if price > 0.0:
+                self._execute_buy(decision, timestamp, price)
+
+        self._recompute_equity()
 
     def _recompute_equity(self) -> None:
         """Équity = liquidités + valeur de marché des positions."""
@@ -471,6 +645,7 @@ class BacktestRunner:
         *,
         benchmark: BarFrame | None = None,
         start_date: datetime | date | str | None = None,
+        news_hook: Callable[[str, pd.Timestamp], NewsSignal | None] | None = None,
     ) -> BacktestResult:
         """Backteste ``data`` (un DataFrame OHLCV normalisé par symbole).
 
@@ -484,6 +659,10 @@ class BacktestRunner:
             start_date: Début effectif de la simulation. Si spécifié, les
                 barres antérieures servent de warm-up pour stabiliser la
                 SMA(200) et les indicateurs sans déclencher d'ordres.
+            news_hook: Note d'actualités par symbole et par barre, pour le
+                chemin de sortie d'urgence. ``None`` (défaut) laisse ce chemin
+                inactif — l'équivalent exact de ``NEWS_FILTER_ENABLED=false``
+                en live, le backtest étant hors ligne par construction.
 
         Raises:
             BacktestError: données vides, index incohérents ou stratégie en
@@ -535,6 +714,9 @@ class BacktestRunner:
 
         risk = RiskEngine(self._risk_config)
         is_shield_sword = getattr(self._strategy, "name", "") == "shield_sword"
+        # Les poids et le Bouclier viennent de la stratégie (donc du .env via
+        # build_strategy) : le backtest ne recode pas les défauts.
+        params = getattr(self._strategy, "params", None)
         simulation = _Simulation(
             config=self._config,
             risk=risk,
@@ -544,6 +726,16 @@ class BacktestRunner:
                 buying_power=self._config.initial_equity,
             ),
             is_shield_sword=is_shield_sword,
+            shield_symbol=str(getattr(params, "shield_symbol", "SGOV")),
+            shield_allocation_pct=float(getattr(params, "shield_allocation_pct", 0.70)),
+            sword_target_weight=float(getattr(params, "sword_allocation_pct", 0.30))
+            / max(1, int(getattr(params, "sword_top_n", 3))),
+            sword_stop_atr_multiplier=float(
+                getattr(params, "sword_stop_atr_multiplier", 5.0)
+            ),
+            sword_max_loss_pct=float(getattr(params, "sword_max_loss_pct", 0.12)),
+            cash_yield_pct=self._config.cash_yield_pct,
+            news_hook=news_hook,
         )
 
         # Régime de marché par séance : benchmark au-dessus de sa SMA longue.
@@ -555,10 +747,23 @@ class BacktestRunner:
             sma_period = self._risk_config.regime_sma_period
             if len(close) >= sma_period:
                 sma = close.rolling(sma_period).mean()
-                bull = (close > sma).where(sma.notna(), False).astype(bool).shift(self._config.execution_delay_bars)
-                bear = (close <= sma).where(sma.notna(), False).astype(bool).shift(self._config.execution_delay_bars)
+                bull = (
+                    (close > sma)
+                    .where(sma.notna(), False)
+                    .astype(bool)
+                    .shift(self._config.execution_delay_bars)
+                )
+                bear = (
+                    (close <= sma)
+                    .where(sma.notna(), False)
+                    .astype(bool)
+                    .shift(self._config.execution_delay_bars)
+                )
                 for ts in benchmark.index:
-                    regime_by_date[ts] = (bool(bull.get(ts, False)), bool(bear.get(ts, False)))
+                    regime_by_date[ts] = (
+                        bool(bull.get(ts, False)),
+                        bool(bear.get(ts, False)),
+                    )
 
         # Score de classement par symbole (z-score de momentum, même mesure que
         # le live) : à chaque barre d'exécution, le budget va d'abord au plus
@@ -624,6 +829,10 @@ class BacktestRunner:
             initial_equity=self._config.initial_equity,
             symbols=tuple(symbols),
             strategy_name=self._strategy.name,
+            final_positions={
+                symbol: position.qty
+                for symbol, position in simulation.account.positions.items()
+            },
         )
 
     def _execution_frame(self, enriched: BarFrame) -> BarFrame:

@@ -232,7 +232,9 @@ def _automation_view() -> dict[str, Any]:
                         view[active_key] = True
                     if key == "NextElapseUSecRealtime" and value.strip():
                         parsed_iso = _parse_systemd_timestamp(value.strip())
-                        if parsed_iso and (view["next_run"] is None or parsed_iso < view["next_run"]):
+                        if parsed_iso and (
+                            view["next_run"] is None or parsed_iso < view["next_run"]
+                        ):
                             view["next_run"] = parsed_iso
         except (OSError, subprocess.SubprocessError):
             pass
@@ -267,7 +269,7 @@ def _run_check(
     broker = broker_factory(settings)
     account = broker.get_account()
     market_open = broker.is_market_open()
-    strategy = build_strategy(strategy_name)
+    strategy = build_strategy(strategy_name, settings=settings)
     now = get_online_now()
     errors: list[str] = []
     if settings.benchmark_symbol in symbols:
@@ -412,9 +414,12 @@ def _run_backtest(
     provider: MarketDataProvider = CachedProvider(
         YFinanceProvider(), settings.state_dir / "cache"
     )
-    strategy = build_strategy(strategy_name)
+    strategy = build_strategy(strategy_name, settings=settings)
     symbols = _tradable_symbols(symbols, settings.benchmark_symbol)
-    data = {symbol: provider.fetch(symbol, fetch_start_dt, end_dt, interval) for symbol in symbols}
+    data = {
+        symbol: provider.fetch(symbol, fetch_start_dt, end_dt, interval)
+        for symbol in symbols
+    }
     # Le nom du benchmark vient de la configuration, pas du code de la
     # stratégie : backtest et live doivent utiliser la même référence.
     benchmark_symbol = (
@@ -481,10 +486,8 @@ def _run_cycle(
     watch_only: bool = False,
 ) -> dict[str, Any]:
     """Un cycle de trading paper (cycle complet ou vigie horaire)."""
-    effective = (
-        settings.model_copy(update={"dry_run": True}) if dry_run else settings
-    )
-    strategy = build_strategy(strategy_name)
+    effective = settings.model_copy(update={"dry_run": True}) if dry_run else settings
+    strategy = build_strategy(strategy_name, settings=effective)
     broker = broker_factory(effective)
     bot = TradingBot(
         effective,
@@ -493,11 +496,7 @@ def _run_cycle(
         notifier=_build_notifier(effective),
         news_analyzer=_build_news_analyzer(effective),
     )
-    report = (
-        bot.run_watch_only(source="gui")
-        if watch_only
-        else bot.run_once(source="gui")
-    )
+    report = bot.run_watch_only(source="gui") if watch_only else bot.run_once(source="gui")
     payload = report.to_dict()
     payload["dry_run"] = dry_run
     return payload
@@ -605,14 +604,19 @@ def _apply_config(
         # chaque enregistrement de réglages effacerait silencieusement
         # l'authentification d'un endpoint public.
         updates["WEBHOOK_TOKEN"] = str(request["webhook_token"]).strip()
-    if "withdrawable_cash_floor_usd" in request and str(request["withdrawable_cash_floor_usd"]).strip():
+    if (
+        "withdrawable_cash_floor_usd" in request
+        and str(request["withdrawable_cash_floor_usd"]).strip()
+    ):
         try:
             floor_val = float(request["withdrawable_cash_floor_usd"])
             if floor_val < 0:
                 raise ValueError
             updates["WITHDRAWABLE_CASH_FLOOR_USD"] = f"{floor_val:.2f}"
         except (ValueError, TypeError) as exc:
-            raise ValueError("Le plancher de cash retirable doit être un montant positif ou nul.") from exc
+            raise ValueError(
+                "Le plancher de cash retirable doit être un montant positif ou nul."
+            ) from exc
     if "equity_hard_floor_usd" in request and str(request["equity_hard_floor_usd"]).strip():
         try:
             eq_val = float(request["equity_hard_floor_usd"])
@@ -620,7 +624,9 @@ def _apply_config(
                 raise ValueError
             updates["EQUITY_HARD_FLOOR_USD"] = f"{eq_val:.2f}"
         except (ValueError, TypeError) as exc:
-            raise ValueError("Le plancher de sécurité global doit être un montant positif ou nul.") from exc
+            raise ValueError(
+                "Le plancher de sécurité global doit être un montant positif ou nul."
+            ) from exc
     if not updates:
         return {"ok": True, "message": "Rien à modifier."}
 
@@ -635,7 +641,9 @@ def _apply_config(
                 "Symboles refusés : " + " ; ".join(problems) + ". Rien n'a été enregistré."
             )
 
-    backup = context.env_path.read_text(encoding="utf-8") if context.env_path.exists() else None
+    backup = (
+        context.env_path.read_text(encoding="utf-8") if context.env_path.exists() else None
+    )
     _update_env(context.env_path, updates)
     try:
         # Relit strictement le .env qui vient d'être écrit (pas un autre fichier
@@ -696,13 +704,17 @@ def _run_withdraw(
             except (ValueError, TypeError) as exc:
                 raise ValueError("Le montant de cash cible est invalide.") from exc
             if target_cash <= 0:
-                raise ValueError("Le montant de cash cible doit être strictement supérieur à 0.")
+                raise ValueError(
+                    "Le montant de cash cible doit être strictement supérieur à 0."
+                )
 
             needed = target_cash - account.cash
             if needed > 0:
                 safe_havens = set(settings.safe_haven_symbols)
                 # 1. Vente des positions safe haven en priorité
-                for sym in [s for s in settings.safe_haven_symbols if s in account.positions]:
+                for sym in [
+                    s for s in settings.safe_haven_symbols if s in account.positions
+                ]:
                     if needed <= 0:
                         break
                     pos = account.positions[sym]
@@ -715,7 +727,11 @@ def _run_withdraw(
                     if qty_to_sell <= 0:
                         continue
                     dec = risk.evaluate_manual_withdrawal(
-                        pos, price=price, qty=qty_to_sell, now=now, reason="safe_haven_withdrawal"
+                        pos,
+                        price=price,
+                        qty=qty_to_sell,
+                        now=now,
+                        reason="safe_haven_withdrawal",
                     )
                     if not dec.approved or dec.intent is None:
                         continue
@@ -726,13 +742,15 @@ def _run_withdraw(
                         broker.wait_for_fill(receipt.order_id, timeout_seconds=30.0)
                     account.cash += qty_to_sell * price
                     needed -= qty_to_sell * price
-                    executed_orders.append({
-                        "symbol": sym,
-                        "qty": qty_to_sell,
-                        "price": price,
-                        "cash_freed": round(qty_to_sell * price, 2),
-                        "reason": "Repli défensif",
-                    })
+                    executed_orders.append(
+                        {
+                            "symbol": sym,
+                            "qty": qty_to_sell,
+                            "price": price,
+                            "cash_freed": round(qty_to_sell * price, 2),
+                            "reason": "Repli défensif",
+                        }
+                    )
                     if qty_to_sell >= pos.qty - 1e-6:
                         account.positions.pop(sym, None)
                     else:
@@ -758,7 +776,11 @@ def _run_withdraw(
                         if qty_to_sell <= 0:
                             continue
                         dec = risk.evaluate_manual_withdrawal(
-                            pos, price=price, qty=qty_to_sell, now=now, reason="gain_trim_withdrawal"
+                            pos,
+                            price=price,
+                            qty=qty_to_sell,
+                            now=now,
+                            reason="gain_trim_withdrawal",
                         )
                         if not dec.approved or dec.intent is None:
                             continue
@@ -769,25 +791,35 @@ def _run_withdraw(
                             broker.wait_for_fill(receipt.order_id, timeout_seconds=30.0)
                         account.cash += qty_to_sell * price
                         needed -= qty_to_sell * price
-                        executed_orders.append({
-                            "symbol": pos.symbol,
-                            "qty": qty_to_sell,
-                            "price": price,
-                            "cash_freed": round(qty_to_sell * price, 2),
-                            "reason": f"Plus-value offensive (+{pos.unrealized_pnl_pct * 100:.1f}%)",
-                        })
+                        executed_orders.append(
+                            {
+                                "symbol": pos.symbol,
+                                "qty": qty_to_sell,
+                                "price": price,
+                                "cash_freed": round(qty_to_sell * price, 2),
+                                "reason": f"Plus-value offensive (+{pos.unrealized_pnl_pct * 100:.1f}%)",
+                            }
+                        )
                         if qty_to_sell >= pos.qty - 1e-6:
                             account.positions.pop(pos.symbol, None)
                         else:
                             pos.qty -= qty_to_sell
                             if pos.stop_price is not None and not settings.dry_run:
-                                stop_dec = risk.evaluate_stop_replace(pos, price=price, now=now)
-                                if stop_dec is not None and stop_dec.approved and stop_dec.intent is not None:
+                                stop_dec = risk.evaluate_stop_replace(
+                                    pos, price=price, now=now
+                                )
+                                if (
+                                    stop_dec is not None
+                                    and stop_dec.approved
+                                    and stop_dec.intent is not None
+                                ):
                                     broker.submit(stop_dec.intent, now=now)
 
             final_floor = target_cash
             if not settings.dry_run:
-                _update_env(context.env_path, {"WITHDRAWABLE_CASH_FLOOR_USD": f"{final_floor:.2f}"})
+                _update_env(
+                    context.env_path, {"WITHDRAWABLE_CASH_FLOOR_USD": f"{final_floor:.2f}"}
+                )
                 context.settings = Settings(_env_file=str(context.env_path))
                 context.env_mtime = _env_mtime(context.env_path)
                 persisted.stops = {
@@ -810,7 +842,9 @@ def _run_withdraw(
 
         symbol = str(request.get("symbol") or "").strip().upper()
         if not symbol:
-            raise ValueError("Veuillez sélectionner un symbole ou renseigner un montant de cash global.")
+            raise ValueError(
+                "Veuillez sélectionner un symbole ou renseigner un montant de cash global."
+            )
         if symbol not in account.positions:
             raise ValueError(f"Le symbole {symbol} n'est pas en portefeuille.")
 
@@ -839,7 +873,9 @@ def _run_withdraw(
                 raise ValueError("Le pourcentage doit être compris entre 1 et 100.")
             qty = min(pos.qty, round(pos.qty * (pct_val / 100.0), 4))
         else:
-            raise ValueError("Veuillez renseigner un montant ($) ou un pourcentage (%) à retirer.")
+            raise ValueError(
+                "Veuillez renseigner un montant ($) ou un pourcentage (%) à retirer."
+            )
 
         if qty <= 0:
             raise ValueError("La quantité calculée est nulle.")
@@ -862,7 +898,11 @@ def _run_withdraw(
                 pos.qty -= qty
                 if pos.stop_price is not None:
                     stop_dec = risk.evaluate_stop_replace(pos, price=price, now=now)
-                    if stop_dec is not None and stop_dec.approved and stop_dec.intent is not None:
+                    if (
+                        stop_dec is not None
+                        and stop_dec.approved
+                        and stop_dec.intent is not None
+                    ):
                         broker.submit(stop_dec.intent, now=now)
             persisted.stops = {
                 s: {k: v for k, v in p.stop_state().items() if v is not None}
@@ -870,13 +910,15 @@ def _run_withdraw(
             }
             state_store.save(persisted)
 
-        executed_orders.append({
-            "symbol": symbol,
-            "qty": qty,
-            "price": price,
-            "cash_freed": round(qty * price, 2),
-            "reason": "Vente manuelle",
-        })
+        executed_orders.append(
+            {
+                "symbol": symbol,
+                "qty": qty,
+                "price": price,
+                "cash_freed": round(qty * price, 2),
+                "reason": "Vente manuelle",
+            }
+        )
         return {
             "ok": True,
             "message": f"Retrait de {qty:.4f} {symbol} exécuté (~{qty * price:.2f} $ dégagés).",
@@ -894,7 +936,9 @@ def _reset_permanent_halt(
         raise ValueError("confirmation manquante")
     reason = str(request.get("reason") or "").strip()
     if not reason:
-        raise ValueError("Expliquez en une phrase ce que vous avez vérifié avant de relancer.")
+        raise ValueError(
+            "Expliquez en une phrase ce que vous avez vérifié avant de relancer."
+        )
     store = StateStore(context.settings.state_dir / "state.json")
     state = store.load()
     if not state.halted or state.halt_scope != "permanent":
@@ -906,7 +950,10 @@ def _reset_permanent_halt(
     state.halt_scope = None
     state.halt_reason = None
     store.save(state)
-    return {"ok": True, "message": "Arrêt permanent levé. Le robot reprendra au prochain cycle."}
+    return {
+        "ok": True,
+        "message": "Arrêt permanent levé. Le robot reprendra au prochain cycle.",
+    }
 
 
 def _install_automation(
@@ -928,7 +975,9 @@ def _install_automation(
         raise ValueError(f"L'installation a échoué : {exc}") from exc
     output = (completed.stdout + completed.stderr).strip()
     if completed.returncode != 0:
-        raise ValueError(f"L'installation a échoué (code {completed.returncode}) : {output}")
+        raise ValueError(
+            f"L'installation a échoué (code {completed.returncode}) : {output}"
+        )
     return {
         "ok": True,
         "message": f"Pilotage automatique activé avec la stratégie {strategy}.",
@@ -1148,9 +1197,7 @@ def build_handler(context: WebContext) -> type[BaseHTTPRequestHandler]:
                 self._send(200, {"ok": True, **_status_payload(context)})
                 return
             if path == "/api/history":
-                self._send(
-                    200, {"ok": True, "entries": _history_entries(context)}
-                )
+                self._send(200, {"ok": True, "entries": _history_entries(context)})
                 return
             self._send(404, {"ok": False, "error": "Page inconnue."})
 
@@ -1178,7 +1225,9 @@ def build_handler(context: WebContext) -> type[BaseHTTPRequestHandler]:
                 job = context.jobs.submit(
                     "check",
                     "Diagnostic du jour",
-                    lambda: _run_check(settings, context.broker_factory, strategy, list(symbols)),
+                    lambda: _run_check(
+                        settings, context.broker_factory, strategy, list(symbols)
+                    ),
                 )
                 return {"ok": True, "job": job.snapshot()}
             if path == "/api/backtest":
@@ -1192,7 +1241,9 @@ def build_handler(context: WebContext) -> type[BaseHTTPRequestHandler]:
                 job = context.jobs.submit(
                     "backtest",
                     f"Backtest {strategy}",
-                    lambda: _run_backtest(settings, strategy, symbols, start, request.get("end")),
+                    lambda: _run_backtest(
+                        settings, strategy, symbols, start, request.get("end")
+                    ),
                     lock=context.backtest_lock,
                 )
                 return {"ok": True, "job": job.snapshot()}

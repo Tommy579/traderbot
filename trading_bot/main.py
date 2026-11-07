@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
 from pathlib import Path
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, TypeVar
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -40,6 +40,7 @@ from trading_bot.config import (
     PROJECT_ROOT,
     BacktestConfig,
     ConfigurationError,
+    RiskConfig,
     Settings,
     configure_logging,
     update_env_file,
@@ -126,28 +127,52 @@ def market_closed_message(status: MarketStatus, market_timezone: str) -> str:
     Returns:
         Une phrase en français, sans préfixe « cycle ignoré ».
     """
-    cause = (
-        status.closure.value if status.closure is not None else "séance non ouverte"
-    )
+    cause = status.closure.value if status.closure is not None else "séance non ouverte"
     message = f"marché fermé ({cause})"
     if status.next_open is not None:
         local = status.next_open.astimezone(ZoneInfo(market_timezone))
         suffix = local.tzname() or market_timezone
         message += (
-            f" — réouverture {_JOURS_FR[local.weekday()]} {local:%d/%m à %H:%M}"
-            f" ({suffix})"
+            f" — réouverture {_JOURS_FR[local.weekday()]} {local:%d/%m à %H:%M} ({suffix})"
         )
     return message
 
 
-def build_strategy(name: str, args: argparse.Namespace | None = None) -> Strategy:
+_T = TypeVar("_T")
+
+
+def _cli_or(value: _T | None, fallback: _T) -> _T:
+    """Valeur CLI si elle est fournie, sinon valeur de configuration.
+
+    Les options du backtest sont déclarées avec ``default=None`` : cela permet
+    de distinguer « non fourni » (on prend le .env) de « fourni à la valeur par
+    défaut ». Sans cette distinction, un ``.env`` renseigné serait ignoré.
+    """
+    return fallback if value is None else value
+
+
+def build_strategy(
+    name: str,
+    args: argparse.Namespace | None = None,
+    *,
+    settings: Settings | None = None,
+) -> Strategy:
     """Construit la stratégie nommée, avec les surcharges CLI éventuelles.
+
+    Args:
+        name: Nom de la stratégie.
+        args: Espace de noms argparse (les attributs absents prennent la valeur
+            par défaut du code ou de la configuration).
+        settings: Configuration effective. Fournie, elle alimente les
+            paramètres de la stratégie (Bouclier + Épée) : sans elle, les
+            réglages du ``.env`` seraient sans effet.
 
     Raises:
         ConfigurationError: stratégie inconnue.
         ValueError: paramètres de stratégie invalides.
     """
     namespace = args or argparse.Namespace()
+    risk = settings.risk if settings is not None else RiskConfig()
     if name == "ema_cross":
         return EmaCrossStrategy(
             EmaCrossParams(
@@ -171,13 +196,48 @@ def build_strategy(name: str, args: argparse.Namespace | None = None) -> Strateg
             )
         )
     if name == "shield_sword":
+        shield_symbol = risk.shield_symbol
+        shield_symbols = tuple(dict.fromkeys([shield_symbol, *risk.safe_haven_symbols]))
         return ShieldSwordStrategy(
             ShieldSwordParams(
-                shield_allocation_pct=getattr(namespace, "shield_pct", 0.70),
-                sword_allocation_pct=getattr(namespace, "sword_pct", 0.30),
-                sword_top_n=getattr(namespace, "sword_top_n", 3),
-                sword_rebalance_days=getattr(namespace, "sword_rebalance_days", 20),
-                sword_trend_sma=getattr(namespace, "sword_trend_sma", 100),
+                shield_allocation_pct=float(
+                    _cli_or(
+                        getattr(namespace, "shield_pct", None),
+                        settings.shield_allocation_pct if settings is not None else 0.70,
+                    )
+                ),
+                sword_allocation_pct=float(
+                    _cli_or(
+                        getattr(namespace, "sword_pct", None),
+                        settings.sword_allocation_pct if settings is not None else 0.30,
+                    )
+                ),
+                sword_top_n=int(
+                    _cli_or(
+                        getattr(namespace, "sword_top_n", None),
+                        settings.sword_top_n if settings is not None else 3,
+                    )
+                ),
+                sword_rebalance_days=int(
+                    _cli_or(
+                        getattr(namespace, "sword_rebalance_days", None),
+                        settings.sword_rebalance_days if settings is not None else 20,
+                    )
+                ),
+                sword_trend_sma=int(
+                    _cli_or(
+                        getattr(namespace, "sword_trend_sma", None),
+                        settings.sword_trend_sma if settings is not None else 100,
+                    )
+                ),
+                sword_stop_atr_multiplier=(
+                    settings.sword_stop_atr_multiplier if settings is not None else 5.0
+                ),
+                sword_max_loss_pct=(
+                    settings.sword_max_loss_pct if settings is not None else 0.12
+                ),
+                shield_symbol=shield_symbol,
+                shield_symbols=shield_symbols,
             )
         )
     raise ConfigurationError(
@@ -275,8 +335,7 @@ def _build_news_analyzer(settings: Settings) -> NewsSentimentAnalyzer | None:
     )
     if not api_key or not secret:
         LOGGER.warning(
-            "filtre d'actualités demandé mais identifiants Alpaca absents : "
-            "filtre ignoré"
+            "filtre d'actualités demandé mais identifiants Alpaca absents : filtre ignoré"
         )
         return None
 
@@ -751,12 +810,16 @@ class TradingBot:
                 }
                 for p in account.positions.values()
             ]
-            report.unrealized_pnl = sum(p.unrealized_pnl for p in account.positions.values())
+            report.unrealized_pnl = sum(
+                p.unrealized_pnl for p in account.positions.values()
+            )
             self._notify(report)
             return report
 
         if not account.positions:
-            self._logger.info("vigie horaire : aucune position en portefeuille à surveiller")
+            self._logger.info(
+                "vigie horaire : aucune position en portefeuille à surveiller"
+            )
             self._persist(account)
             report.equity = account.equity
             report.cash = account.cash
@@ -793,7 +856,9 @@ class TradingBot:
                 now=now,
             )
             if decision is not None:
-                self._logger.warning("vigie horaire: sortie d'urgence %s: %s", symbol, decision.reason)
+                self._logger.warning(
+                    "vigie horaire: sortie d'urgence %s: %s", symbol, decision.reason
+                )
 
             # 2. Sortie sur stop-loss journalier
             if decision is None:
@@ -801,15 +866,25 @@ class TradingBot:
 
             # 3. Take-profit partiel (+20% PnL)
             if decision is None:
-                decision = self._risk.evaluate_partial_take_profit(position, price=price, now=now)
+                decision = self._risk.evaluate_partial_take_profit(
+                    position, price=price, now=now
+                )
                 if decision is not None:
-                    self._logger.info("vigie horaire: take-profit partiel %s: %s", symbol, decision.reason)
+                    self._logger.info(
+                        "vigie horaire: take-profit partiel %s: %s", symbol, decision.reason
+                    )
 
             # 4. Écrémage surpondération (>25% équité)
             if decision is None:
-                decision = self._risk.evaluate_overweight_trim(position, price=price, account=account, now=now)
+                decision = self._risk.evaluate_overweight_trim(
+                    position, price=price, account=account, now=now
+                )
                 if decision is not None:
-                    self._logger.info("vigie horaire: écrémage surpondération %s: %s", symbol, decision.reason)
+                    self._logger.info(
+                        "vigie horaire: écrémage surpondération %s: %s",
+                        symbol,
+                        decision.reason,
+                    )
 
             if decision is None:
                 continue
@@ -817,7 +892,11 @@ class TradingBot:
             report.decisions.append(decision)
             self._audit_decision(decision)
             if self._execute_decision(decision, now, account, report):
-                self._logger.info("vigie horaire: position %s coupée ou allégée (%s)", symbol, decision.reason)
+                self._logger.info(
+                    "vigie horaire: position %s coupée ou allégée (%s)",
+                    symbol,
+                    decision.reason,
+                )
 
         # 5. Reconstitution du plancher de cash via Safe Haven si nécessaire
         reconstitution_decisions = self._risk.evaluate_safe_haven_cash_floor_reconstitution(
@@ -934,7 +1013,17 @@ class TradingBot:
             if self._settings.safe_haven_enabled
             else set()
         )
-        universe = sorted(set(self._settings.symbols) | safe_havens | set(account.positions))
+        # Le Bouclier est un actif comme les autres pour la couche données : il
+        # faut ses barres pour le coter, le classer hors du panier offensif et
+        # l'acheter. Sans cette ligne, SHIELD_SYMBOL resterait une intention.
+        sword = self._shield_sword_params()
+        shield_sleeve = {sword.shield_symbol} if sword is not None else set()
+        universe = sorted(
+            set(self._settings.symbols)
+            | safe_havens
+            | shield_sleeve
+            | set(account.positions)
+        )
         bars_by_symbol: dict[str, BarFrame] = {}
         for symbol in universe:
             try:
@@ -980,7 +1069,9 @@ class TradingBot:
                 }
                 for p in account.positions.values()
             ]
-            report.unrealized_pnl = sum(p.unrealized_pnl for p in account.positions.values())
+            report.unrealized_pnl = sum(
+                p.unrealized_pnl for p in account.positions.values()
+            )
             self._notify(report)
             return report
 
@@ -1014,14 +1105,20 @@ class TradingBot:
                     )
             # Take-profit partiel (+20% PnL)
             if decision is None:
-                decision = self._risk.evaluate_partial_take_profit(position, price=price, now=now)
+                decision = self._risk.evaluate_partial_take_profit(
+                    position, price=price, now=now
+                )
                 if decision is not None:
                     self._logger.info("take-profit partiel %s: %s", symbol, decision.reason)
             # Écrémage surpondération (>25% équité)
             if decision is None:
-                decision = self._risk.evaluate_overweight_trim(position, price=price, account=account, now=now)
+                decision = self._risk.evaluate_overweight_trim(
+                    position, price=price, account=account, now=now
+                )
                 if decision is not None:
-                    self._logger.info("écrémage surpondération %s: %s", symbol, decision.reason)
+                    self._logger.info(
+                        "écrémage surpondération %s: %s", symbol, decision.reason
+                    )
 
             if decision is None:
                 continue
@@ -1096,7 +1193,8 @@ class TradingBot:
                     qty_by_risk = risk_budget / stop_distance
                     gross_rem = max(
                         0.0,
-                        account.equity * self._risk.effective_gross_cap_pct() - account.gross_exposure,
+                        account.equity * self._risk.effective_gross_cap_pct()
+                        - account.gross_exposure,
                     )
                     notional_cap = min(
                         account.equity * self._risk.effective_position_cap_pct(),
@@ -1104,7 +1202,9 @@ class TradingBot:
                     )
                     target_notional = min(qty_by_risk * price, notional_cap)
                     cash_buffer = account.equity * self._risk.config.cash_buffer_pct
-                    usable_cash = max(0.0, min(account.cash - cash_buffer, account.buying_power))
+                    usable_cash = max(
+                        0.0, min(account.cash - cash_buffer, account.buying_power)
+                    )
                     if target_notional > usable_cash:
                         needed = target_notional - usable_cash
                         unwind_decisions = self._risk.evaluate_safe_haven_unwind(
@@ -1120,10 +1220,17 @@ class TradingBot:
                                     u_dec.reason,
                                 )
 
-            is_ss = self._strategy.name == "shield_sword"
-            is_shield_asset = is_ss and (
-                symbol == "SGOV" or symbol in self._settings.safe_haven_symbols
-            )
+            is_shield_asset = sword is not None and symbol in sword.shield_symbols
+            target_weight: float | None = None
+            atr_multiple: float | None = None
+            max_loss: float | None = None
+            if sword is not None:
+                if is_shield_asset:
+                    target_weight = sword.shield_allocation_pct
+                else:
+                    target_weight = sword.sword_allocation_pct / max(1, sword.sword_top_n)
+                    atr_multiple = sword.sword_stop_atr_multiplier
+                    max_loss = sword.sword_max_loss_pct
             decision = self._risk.evaluate_entry(
                 symbol=symbol,
                 price=price,
@@ -1132,9 +1239,9 @@ class TradingBot:
                 now=now,
                 session_date=session_date,
                 news=assessments.get(symbol),
-                target_weight=0.10 if (is_ss and not is_shield_asset) else (0.70 if is_shield_asset else None),
-                atr_stop_multiple=5.0 if (is_ss and not is_shield_asset) else None,
-                max_loss_pct=0.12 if (is_ss and not is_shield_asset) else None,
+                target_weight=target_weight,
+                atr_stop_multiple=atr_multiple,
+                max_loss_pct=max_loss,
                 is_shield=is_shield_asset,
             )
             report.decisions.append(decision)
@@ -1148,6 +1255,29 @@ class TradingBot:
                 )
                 continue
             self._execute_decision(decision, now, account, report)
+
+        # Le Bouclier se finance après les entrées offensives : il récupère le
+        # cash que la sélection n'a pas engagé, jusqu'à son poids cible.
+        if sword is not None and sword.shield_allocation_pct > 0.0:
+            shield_price = marks.get(sword.shield_symbol)
+            if shield_price is not None:
+                shield_decision = self._risk.evaluate_shield_allocation(
+                    account,
+                    symbol=sword.shield_symbol,
+                    price=shield_price,
+                    target_weight=sword.shield_allocation_pct,
+                    now=now,
+                )
+                if shield_decision is not None:
+                    report.decisions.append(shield_decision)
+                    self._audit_decision(shield_decision)
+                    if self._execute_decision(shield_decision, now, account, report):
+                        self._logger.info(
+                            "bouclier %s financé à %.0f%%: %s",
+                            sword.shield_symbol,
+                            sword.shield_allocation_pct * 100,
+                            shield_decision.reason,
+                        )
 
         # Cash Sweep en fin de cycle : réinvestissement du cash excédentaire vers les safe havens
         if self._settings.safe_haven_enabled and not account.halted:
@@ -1322,6 +1452,18 @@ class TradingBot:
             return
         self._notifier.send("cycle_trading", report.to_dict())
 
+    def _shield_sword_params(self) -> ShieldSwordParams | None:
+        """Paramètres Bouclier + Épée de la stratégie courante, ou ``None``.
+
+        Source unique des poids, du multiple d'ATR et de la perte maximale : le
+        live ne doit pas recoder en dur ce que la stratégie (et donc le
+        backtest) tient de la configuration.
+        """
+        if self._strategy.name != "shield_sword":
+            return None
+        params = getattr(self._strategy, "params", None)
+        return params if isinstance(params, ShieldSwordParams) else None
+
     @staticmethod
     def _entry_score(bars: BarFrame | None) -> float:
         """Z-score de momentum (60/120 j) de la dernière barre achevée.
@@ -1352,6 +1494,11 @@ class TradingBot:
         """
         for symbol, position in account.positions.items():
             if position.stop_price is not None:
+                continue
+            if self._risk.is_defensive_symbol(symbol):
+                # Le Bouclier est l'actif sans risque du montage : lui coller un
+                # stop ATR le transformerait en action à protéger, et le ferait
+                # liquider sur une simple respiration du marché obligataire.
                 continue
             signal = signals.get(symbol)
             atr = signal.indicators.get("atr") if signal else None
@@ -1774,7 +1921,7 @@ def cmd_live(args: argparse.Namespace) -> int:
     settings = _settings_from_args(args)
     logger = configure_logging(settings)
     try:
-        strategy = build_strategy(args.strategy)
+        strategy = build_strategy(args.strategy, settings=settings)
     except (ConfigurationError, ValueError) as exc:
         logger.error("%s", exc)
         return 2
@@ -1810,7 +1957,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     settings = _settings_from_args(args)
     logger = configure_logging(settings)
     try:
-        strategy = build_strategy(args.strategy)
+        strategy = build_strategy(args.strategy, settings=settings)
     except (ConfigurationError, ValueError) as exc:
         logger.error("%s", exc)
         return 2
@@ -1951,7 +2098,9 @@ def cmd_check(args: argparse.Namespace) -> int:
             f"(confiance {assessment.confidence:.2f}, "
             f"{assessment.articles_count} article(s))"
         )
-        print(f"  effet           : {news_effect_label(assessment, engine=engine, panic=panic)}")
+        print(
+            f"  effet           : {news_effect_label(assessment, engine=engine, panic=panic)}"
+        )
         if assessment.is_critical_threat:
             print("  menace critique : oui")
         print(f"  motif           : {assessment.rationale}")
@@ -2055,9 +2204,7 @@ def cmd_news(args: argparse.Namespace) -> int:
     def emit(symbol: str, assessment: NewsAssessment) -> None:
         """Affiche une ligne sitôt calculée, sans attendre les suivantes."""
         print(
-            _format_news_row(
-                symbol, assessment, panic=panic, engine=engine
-            ),
+            _format_news_row(symbol, assessment, panic=panic, engine=engine),
             flush=True,
         )
 
@@ -2138,7 +2285,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        strategy = build_strategy(args.strategy, args)
+        strategy = build_strategy(args.strategy, args, settings=settings)
     except ValueError as exc:
         logger.error("paramètres de stratégie invalides: %s", exc)
         return 2
@@ -2296,7 +2443,11 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
                 if qty_to_sell <= 0:
                     continue
                 dec = risk.evaluate_manual_withdrawal(
-                    pos, price=price, qty=qty_to_sell, now=now, reason="safe_haven_withdrawal"
+                    pos,
+                    price=price,
+                    qty=qty_to_sell,
+                    now=now,
+                    reason="safe_haven_withdrawal",
                 )
                 if not dec.approved or dec.intent is None:
                     continue
@@ -2304,7 +2455,9 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
                     if hasattr(broker, "cancel_open_orders"):
                         broker.cancel_open_orders(sym)
                     receipt = broker.submit(dec.intent, now=now)
-                    broker.wait_for_fill(receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS)
+                    broker.wait_for_fill(
+                        receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS
+                    )
                 account.cash += qty_to_sell * price
                 needed -= qty_to_sell * price
                 if qty_to_sell >= pos.qty - 1e-6:
@@ -2339,7 +2492,11 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
                     if qty_to_sell <= 0:
                         continue
                     dec = risk.evaluate_manual_withdrawal(
-                        pos, price=price, qty=qty_to_sell, now=now, reason="gain_trim_withdrawal"
+                        pos,
+                        price=price,
+                        qty=qty_to_sell,
+                        now=now,
+                        reason="gain_trim_withdrawal",
                     )
                     if not dec.approved or dec.intent is None:
                         continue
@@ -2347,7 +2504,9 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
                         if hasattr(broker, "cancel_open_orders"):
                             broker.cancel_open_orders(pos.symbol)
                         receipt = broker.submit(dec.intent, now=now)
-                        broker.wait_for_fill(receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS)
+                        broker.wait_for_fill(
+                            receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS
+                        )
                     account.cash += qty_to_sell * price
                     needed -= qty_to_sell * price
                     if qty_to_sell >= pos.qty - 1e-6:
@@ -2356,7 +2515,11 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
                         pos.qty -= qty_to_sell
                         if pos.stop_price is not None and not settings.dry_run:
                             stop_dec = risk.evaluate_stop_replace(pos, price=price, now=now)
-                            if stop_dec is not None and stop_dec.approved and stop_dec.intent is not None:
+                            if (
+                                stop_dec is not None
+                                and stop_dec.approved
+                                and stop_dec.intent is not None
+                            ):
                                 broker.submit(stop_dec.intent, now=now)
                     logger.info(
                         "vente gain %s (+%.1f%%) : %.4f titres @ %.2f$ -> +%.2f$ cash",
@@ -2369,15 +2532,23 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
 
         final_floor = target_cash
         if not settings.dry_run:
-            update_env_file(PROJECT_ROOT / ".env", {"WITHDRAWABLE_CASH_FLOOR_USD": f"{final_floor:.2f}"})
-            logger.info("plancher WITHDRAWABLE_CASH_FLOOR_USD mis à jour à %.2f$ dans .env", final_floor)
+            update_env_file(
+                PROJECT_ROOT / ".env", {"WITHDRAWABLE_CASH_FLOOR_USD": f"{final_floor:.2f}"}
+            )
+            logger.info(
+                "plancher WITHDRAWABLE_CASH_FLOOR_USD mis à jour à %.2f$ dans .env",
+                final_floor,
+            )
             persisted.stops = {
                 s: {k: v for k, v in p.stop_state().items() if v is not None}
                 for s, p in account.positions.items()
             }
             state_store.save(persisted)
         else:
-            logger.info("dry-run : plancher WITHDRAWABLE_CASH_FLOOR_USD serait mis à jour à %.2f$", final_floor)
+            logger.info(
+                "dry-run : plancher WITHDRAWABLE_CASH_FLOOR_USD serait mis à jour à %.2f$",
+                final_floor,
+            )
         return 0
 
     if getattr(args, "symbol", None):
@@ -2430,7 +2601,9 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
             if hasattr(broker, "cancel_open_orders"):
                 broker.cancel_open_orders(symbol)
             receipt = broker.submit(dec.intent, now=now)
-            broker.wait_for_fill(receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS)
+            broker.wait_for_fill(
+                receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS
+            )
             account.cash += qty * price
             if qty >= pos.qty - 1e-6:
                 account.positions.pop(symbol, None)
@@ -2438,7 +2611,11 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
                 pos.qty -= qty
                 if pos.stop_price is not None:
                     stop_dec = risk.evaluate_stop_replace(pos, price=price, now=now)
-                    if stop_dec is not None and stop_dec.approved and stop_dec.intent is not None:
+                    if (
+                        stop_dec is not None
+                        and stop_dec.approved
+                        and stop_dec.intent is not None
+                    ):
                         broker.submit(stop_dec.intent, now=now)
             persisted.stops = {
                 s: {k: v for k, v in p.stop_state().items() if v is not None}
@@ -2447,7 +2624,9 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
             state_store.save(persisted)
         return 0
 
-    logger.error("veuillez spécifier soit --symbol avec (--amount ou --pct), soit --free-cash")
+    logger.error(
+        "veuillez spécifier soit --symbol avec (--amount ou --pct), soit --free-cash"
+    )
     return 2
 
 
@@ -2568,32 +2747,32 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument(
         "--shield-pct",
         type=float,
-        default=0.70,
-        help="allocation bouclier (shield_sword, défaut: 0.70)",
+        default=None,
+        help="allocation bouclier (shield_sword, défaut: SHIELD_ALLOCATION_PCT)",
     )
     backtest.add_argument(
         "--sword-pct",
         type=float,
-        default=0.30,
-        help="allocation épée (shield_sword, défaut: 0.30)",
+        default=None,
+        help="allocation épée (shield_sword, défaut: SWORD_ALLOCATION_PCT)",
     )
     backtest.add_argument(
         "--sword-top-n",
         type=int,
-        default=3,
-        help="nombre d'actions dans l'épée (shield_sword, défaut: 3)",
+        default=None,
+        help="nombre d'actions dans l'épée (shield_sword, défaut: SWORD_TOP_N)",
     )
     backtest.add_argument(
         "--sword-rebalance-days",
         type=int,
-        default=20,
-        help="jours entre rebalancements (shield_sword, défaut: 20)",
+        default=None,
+        help="jours entre rebalancements (shield_sword, défaut: SWORD_REBALANCE_DAYS)",
     )
     backtest.add_argument(
         "--sword-trend-sma",
         type=int,
-        default=100,
-        help="SMA de tendance (shield_sword, défaut: 100)",
+        default=None,
+        help="SMA de tendance (shield_sword, défaut: SWORD_TREND_SMA)",
     )
     backtest.add_argument("--output", type=Path, help="fichier JSON de résultats")
     backtest.add_argument("--csv", type=Path, help="fichier CSV de la courbe d'équity")
@@ -2615,8 +2794,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     withdraw.add_argument("--symbol", help="symbole à vendre (ex: NVDA)")
     withdraw.add_argument("--amount", type=float, help="montant en dollars à liquider")
-    withdraw.add_argument("--pct", type=float, help="pourcentage de la ligne à liquider (0-100)")
-    withdraw.add_argument("--free-cash", type=float, help="montant de cash cible à sanctuariser")
+    withdraw.add_argument(
+        "--pct", type=float, help="pourcentage de la ligne à liquider (0-100)"
+    )
+    withdraw.add_argument(
+        "--free-cash", type=float, help="montant de cash cible à sanctuariser"
+    )
     withdraw.add_argument("--dry-run", action="store_true", help="simuler sans transmettre")
     withdraw.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     withdraw.set_defaults(func=cmd_withdraw)

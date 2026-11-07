@@ -512,3 +512,145 @@ def test_bull_regime_raises_entry_notional_cap() -> None:
 def test_bull_cap_validation_rejects_incoherent_profile() -> None:
     with pytest.raises(ValueError):
         RiskConfig(bull_max_position_pct=0.5, bull_gross_exposure_pct=0.4)
+
+
+def test_custom_shield_symbol_is_treated_as_defensive() -> None:
+    """Le symbole du Bouclier vient de la configuration, pas d'une constante « SGOV »."""
+    engine = RiskEngine(RiskConfig(shield_symbol="SHV"))
+    position = Position(
+        symbol="SHV",
+        qty=100.0,
+        avg_entry_price=100.0,
+        current_price=130.0,
+        stop_price=90.0,
+        initial_stop_price=90.0,
+        highest_price=130.0,
+    )
+    account = AccountState(
+        equity=10_000.0, cash=0.0, buying_power=0.0, positions={"SHV": position}
+    )
+
+    assert engine.update_trailing_stop(position, price=130.0, atr=1.0) is None
+    assert engine.evaluate_partial_take_profit(position, price=130.0, now=NOW) is None
+    assert (
+        engine.evaluate_overweight_trim(position, price=130.0, account=account, now=NOW)
+        is None
+    )
+
+
+def test_custom_shield_symbol_does_not_block_offensive_position_limit() -> None:
+    """Le Bouclier ne consomme pas un emplacement de la limite de positions offensives."""
+    engine = RiskEngine(RiskConfig(shield_symbol="SHV", max_open_positions=1))
+    account = make_account()
+    account.positions["SHV"] = Position(
+        symbol="SHV", qty=100.0, avg_entry_price=100.0, current_price=100.0
+    )
+    decision = engine.evaluate_entry(
+        symbol="AAPL",
+        price=50.0,
+        atr=2.0,
+        account=account,
+        now=NOW,
+        session_date=SESSION,
+    )
+    assert decision.approved
+
+
+def test_shield_allocation_buys_up_to_target_weight() -> None:
+    """Le Bouclier se finance jusqu'à son poids cible, sans stop ni trailing."""
+    engine = RiskEngine(RiskConfig(shield_symbol="SHV", cash_buffer_pct=0.10))
+    account = make_account(100_000.0)
+
+    decision = engine.evaluate_shield_allocation(
+        account, symbol="SHV", price=100.0, target_weight=0.70, now=NOW
+    )
+
+    assert decision.approved
+    assert decision.intent is not None
+    assert decision.intent.qty == pytest.approx(700.0)
+    assert decision.intent.stop_price is None
+    assert decision.intent.reason == "shield_allocation"
+
+
+def test_shield_allocation_tops_up_only_the_gap() -> None:
+    """Une poche déjà partiellement financée ne reçoit que le complément."""
+    engine = RiskEngine(RiskConfig(shield_symbol="SHV", cash_buffer_pct=0.10))
+    account = make_account(100_000.0, cash=70_000.0)
+    account.positions["SHV"] = Position(
+        symbol="SHV", qty=300.0, avg_entry_price=100.0, current_price=100.0
+    )
+
+    decision = engine.evaluate_shield_allocation(
+        account, symbol="SHV", price=100.0, target_weight=0.70, now=NOW
+    )
+
+    assert decision.approved
+    assert decision.intent is not None
+    assert decision.intent.qty == pytest.approx(400.0)
+
+
+def test_shield_allocation_is_silent_when_already_funded() -> None:
+    """Aucun ordre quand la poche a atteint son poids cible."""
+    engine = RiskEngine(RiskConfig(shield_symbol="SHV"))
+    account = make_account(100_000.0, cash=30_000.0)
+    account.positions["SHV"] = Position(
+        symbol="SHV", qty=700.0, avg_entry_price=100.0, current_price=100.0
+    )
+
+    assert (
+        engine.evaluate_shield_allocation(
+            account, symbol="SHV", price=100.0, target_weight=0.70, now=NOW
+        )
+        is None
+    )
+
+
+def test_shield_allocation_respects_the_cash_buffer() -> None:
+    """Le plancher de cash reste sanctuarisé : le Bouclier ne boit pas la réserve."""
+    engine = RiskEngine(RiskConfig(shield_symbol="SHV", cash_buffer_pct=0.10))
+    account = make_account(100_000.0, cash=20_000.0)
+
+    decision = engine.evaluate_shield_allocation(
+        account, symbol="SHV", price=100.0, target_weight=0.70, now=NOW
+    )
+
+    assert decision.approved
+    assert decision.intent is not None
+    # 20 000 de cash - 10 000 de buffer (10 % de 100 000) = 10 000 investissables
+    assert decision.intent.qty == pytest.approx(100.0)
+
+
+def test_shield_allocation_ignores_tiny_gaps() -> None:
+    """Un écart de quelques dollars ne justifie pas un ordre à chaque séance."""
+    engine = RiskEngine(RiskConfig(shield_symbol="SHV"))
+    account = make_account(100_000.0, cash=30_100.0)
+    account.positions["SHV"] = Position(
+        symbol="SHV", qty=699.0, avg_entry_price=100.0, current_price=100.0
+    )
+
+    # Écart de 100 $ sur 100 000 $ d'équité : sous le seuil de réajustement.
+    assert (
+        engine.evaluate_shield_allocation(
+            account, symbol="SHV", price=100.0, target_weight=0.70, now=NOW
+        )
+        is None
+    )
+
+
+def test_cash_sweep_never_targets_the_shield_symbol() -> None:
+    """Même listé dans les safe havens, le Bouclier garde son financement propre."""
+    engine = RiskEngine(
+        RiskConfig(
+            shield_symbol="SHV",
+            safe_haven_symbols=["SHV", "KO"],
+            cash_buffer_pct=0.10,
+            max_safe_haven_total_pct=0.50,
+        )
+    )
+    account = make_account(100_000.0)
+    prices = {"SHV": 100.0, "KO": 50.0}
+
+    decisions = engine.evaluate_cash_sweep(account, prices, now=NOW)
+
+    assert decisions, "la poche de repli doit tout de même être financée"
+    assert {decision.intent.symbol for decision in decisions if decision.intent} == {"KO"}
