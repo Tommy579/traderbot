@@ -1102,3 +1102,7 @@ nav[role="tablist"] button[aria-selected="true"]::after {
 .alloc-dot.invested { background: var(--ink); }
 .alloc-dot.free-cash { background: color-mix(in srgb, var(--ink) 45%, var(--surface-2)); }
 .alloc-dot.floor-cash { background: color-mix(in srgb, var(--ink) 18%, var(--surface-2)); }
+
+/* Défilement horizontal sans barre visible (tactile / pavé). */
+.table-wrap { scrollbar-width: none; -ms-overflow-style: none; }
+.table-wrap::-webkit-scrollbar { display: none; }

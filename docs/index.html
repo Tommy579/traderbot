@@ -110,7 +110,9 @@
   .neg { color: var(--bad); }
 
   /* Tableaux */
-  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px;
+                -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; }
+  .table-wrap::-webkit-scrollbar { display: none; }
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 6px; }
   .table-wrap table { margin-top: 0; }
   th { text-align: left; color: var(--muted); font-weight: 600; padding: 9px 10px; font-size: 11px;
