@@ -654,3 +654,32 @@ def test_cash_sweep_never_targets_the_shield_symbol() -> None:
 
     assert decisions, "la poche de repli doit tout de même être financée"
     assert {decision.intent.symbol for decision in decisions if decision.intent} == {"KO"}
+
+
+def test_rebase_equity_reference_clears_a_phantom_drawdown() -> None:
+    """Après un retrait de cash externe, le drawdown mesuré doit repartir de zéro."""
+    engine = RiskEngine(RiskConfig(max_daily_loss_pct=0.03, max_drawdown_pct=0.15))
+    account = make_account(80_000.0)
+    account.peak_equity = 100_000.0
+    account.day_start_equity = 100_000.0
+
+    halted = engine.update_risk_state(account, session_date=SESSION)
+    assert halted is not None
+    assert halted.scope is HaltScope.PERMANENT
+
+    previous_peak, lifted = engine.rebase_equity_reference(
+        account, reason="retrait de 20 000 $ vers mon compte"
+    )
+
+    assert previous_peak == 100_000.0
+    assert lifted is True
+    assert account.halted is False
+    assert account.peak_equity == 80_000.0
+    assert engine.update_risk_state(account, session_date=SESSION) is None
+
+
+def test_rebase_equity_reference_requires_a_reason() -> None:
+    """Ré-ancrer la référence est une décision humaine : elle se justifie."""
+    engine = RiskEngine()
+    with pytest.raises(RiskError, match="justification"):
+        engine.rebase_equity_reference(make_account(), reason="   ")

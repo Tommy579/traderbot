@@ -43,7 +43,6 @@ from trading_bot.config import (
     RiskConfig,
     Settings,
     configure_logging,
-    update_env_file,
 )
 from trading_bot.data.loader import (
     BarFrame,
@@ -91,6 +90,11 @@ from trading_bot.strategies.relative_momentum import (
 from trading_bot.strategies.shield_sword import (
     ShieldSwordParams,
     ShieldSwordStrategy,
+)
+from trading_bot.withdrawal import (
+    WithdrawalResult,
+    WithdrawalService,
+    cancel_open_orders_verified,
 )
 
 LOGGER = logging.getLogger("trading_bot.main")
@@ -1610,30 +1614,14 @@ class TradingBot:
         return True
 
     def _cancel_open_orders(self, symbol: str, report: CycleReport) -> bool:
-        """Annule les ordres ouverts du symbole, et échoue en mode fermé."""
-        cancel = getattr(self._broker, "cancel_open_orders", None)
-        if cancel is None:
-            error = (
-                f"{symbol}: courtier incapable de confirmer l'annulation des ordres ouverts"
-            )
-            report.errors.append(error)
-            self._audit.record(
-                "cancel_open_orders_failed", {"symbol": symbol, "error": error}
-            )
-            self._logger.error("%s", error)
-            return False
-        try:
-            cancelled = int(cancel(symbol))
-        except BrokerError as exc:
-            error = f"{symbol}: annulation des ordres ouverts impossible: {exc}"
-            report.errors.append(error)
-            self._audit.record(
-                "cancel_open_orders_failed", {"symbol": symbol, "error": str(exc)}
-            )
-            self._logger.error("%s", error)
-            return False
-        self._audit.record("cancel_open_orders", {"symbol": symbol, "count": cancelled})
-        return True
+        """Annule les ordres ouverts du symbole, et échoue en mode fermé.
+
+        Délègue au garde-fou partagé avec les retraits manuels : une seule
+        implémentation, donc une seule règle de sécurité.
+        """
+        return cancel_open_orders_verified(
+            self._broker, symbol, audit=self._audit, errors=report.errors
+        )
 
     def _sync_broker_stop(
         self,
@@ -2379,6 +2367,27 @@ def cmd_web(args: argparse.Namespace) -> int:
     return 0
 
 
+def _withdrawal_payload(kind: str, result: WithdrawalResult) -> dict[str, Any]:
+    """Résumé JSON d'un retrait, identique en CLI et dans l'interface."""
+    return {
+        "ok": not result.errors,
+        "kind": kind,
+        "fills": [
+            {
+                "symbol": fill.symbol,
+                "qty": fill.qty,
+                "price": fill.price,
+                "cash_freed": round(fill.cash_freed, 2),
+                "reason": fill.reason,
+            }
+            for fill in result.fills
+        ],
+        "cash": round(result.cash, 2),
+        "floor": result.floor,
+        "errors": list(result.errors),
+    }
+
+
 def cmd_withdraw(args: argparse.Namespace) -> int:
     """Commande ``withdraw`` : retrait manuel ou sanctuarisation de cash."""
     settings = _settings_from_args(args)
@@ -2389,245 +2398,125 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
         logger.error("%s", exc)
         return 2
 
-    risk = RiskEngine(settings.risk)
-    state_store = StateStore(settings.state_dir / "state.json")
-    persisted = state_store.load()
+    service = WithdrawalService(
+        settings,
+        broker,
+        state_store=StateStore(settings.state_dir / "state.json"),
+        audit=AuditLog(settings.state_dir / "audit.jsonl"),
+        env_path=PROJECT_ROOT / ".env",
+    )
 
     try:
-        snapshot = broker.get_account()
-        positions = broker.get_positions()
-    except BrokerError as exc:
-        logger.error("erreur de communication avec le courtier: %s", exc)
+        if getattr(args, "free_cash", None) is not None:
+            result = service.withdraw_free_cash(float(args.free_cash))
+            print(
+                json.dumps(
+                    _withdrawal_payload("free_cash", result), indent=2, ensure_ascii=False
+                )
+            )
+            return 0 if not result.errors else 1
+
+        symbol = getattr(args, "symbol", None)
+        if not symbol:
+            logger.error(
+                "veuillez spécifier soit --symbol avec (--amount ou --pct), "
+                "soit --free-cash"
+            )
+            return 2
+        result = service.withdraw_symbol(
+            str(symbol),
+            amount=getattr(args, "amount", None),
+            pct=getattr(args, "pct", None),
+        )
+        print(
+            json.dumps(_withdrawal_payload("symbol", result), indent=2, ensure_ascii=False)
+        )
+        return 0 if not result.errors else 1
+    except (BrokerError, ValueError) as exc:
+        logger.error("%s", exc)
         return 2
 
-    restored: dict[str, Position] = {}
-    for sym, pos in positions.items():
-        stored = persisted.stops.get(sym)
-        if stored:
-            pos.apply_stop_state(stored)
-        restored[sym] = pos
 
+def cmd_rebase(args: argparse.Namespace) -> int:
+    """Commande ``rebase`` : ré-ancre le pic d'équité après un mouvement de cash.
+
+    Un dépôt ou un retrait fait chez le courtier modifie l'équité sans qu'aucun
+    trade n'ait eu lieu. Le drawdown mesuré depuis l'ancien pic devient alors
+    fictif et déclenche l'arrêt permanent. Cette commande, explicitement
+    demandée avec sa justification, recale la référence et lève l'arrêt.
+    """
+    settings = _settings_from_args(args)
+    logger = configure_logging(settings)
+    reason = str(getattr(args, "reason", "") or "").strip()
+    if not reason:
+        logger.error("une justification est requise : --reason « retrait de X $ »")
+        return 2
+
+    try:
+        broker = AlpacaPaperClient(settings)
+        snapshot = broker.get_account()
+    except (ConfigurationError, BrokerError) as exc:
+        logger.error("%s", exc)
+        return 2
+
+    state_store = StateStore(settings.state_dir / "state.json")
+    state = state_store.load()
+    audit = AuditLog(settings.state_dir / "audit.jsonl")
     account = AccountState(
         equity=snapshot.equity,
         cash=snapshot.cash,
         buying_power=snapshot.buying_power,
-        positions=restored,
+        peak_equity=state.peak_equity,
+        day_start_equity=state.day_start_equity,
+        halted=state.halted,
+        halt_scope=HaltScope(state.halt_scope) if state.halt_scope else None,
+        halt_reason=state.halt_reason,
     )
-    now = get_online_now()
-
-    if getattr(args, "free_cash", None) is not None:
-        target_cash = float(args.free_cash)
-        if target_cash <= 0:
-            logger.error("le montant free-cash doit être strictement positif")
-            return 2
-        needed = target_cash - account.cash
-        logger.info(
-            "retrait global : cash actuel=%.2f$, cible=%.2f$, besoin=%.2f$",
-            account.cash,
-            target_cash,
-            max(0.0, needed),
-        )
-        if needed > 0:
-            safe_havens = set(settings.safe_haven_symbols)
-            # 1. Vente des positions safe haven en priorité
-            for sym in [s for s in settings.safe_haven_symbols if s in account.positions]:
-                if needed <= 0:
-                    break
-                pos = account.positions[sym]
-                price = pos.current_price
-                if price <= 0:
-                    continue
-                pos_val = pos.qty * price
-                val_to_sell = min(pos_val, needed)
-                qty_to_sell = min(pos.qty, round(val_to_sell / price, 4))
-                if qty_to_sell <= 0:
-                    continue
-                dec = risk.evaluate_manual_withdrawal(
-                    pos,
-                    price=price,
-                    qty=qty_to_sell,
-                    now=now,
-                    reason="safe_haven_withdrawal",
-                )
-                if not dec.approved or dec.intent is None:
-                    continue
-                if not settings.dry_run:
-                    if hasattr(broker, "cancel_open_orders"):
-                        broker.cancel_open_orders(sym)
-                    receipt = broker.submit(dec.intent, now=now)
-                    broker.wait_for_fill(
-                        receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS
-                    )
-                account.cash += qty_to_sell * price
-                needed -= qty_to_sell * price
-                if qty_to_sell >= pos.qty - 1e-6:
-                    account.positions.pop(sym, None)
-                else:
-                    pos.qty -= qty_to_sell
-                logger.info(
-                    "vente repli %s : %.4f titres @ %.2f$ -> +%.2f$ cash",
-                    sym,
-                    qty_to_sell,
-                    price,
-                    qty_to_sell * price,
-                )
-
-            # 2. Si insuffisant, positions offensives les plus gagnantes
-            if needed > 0:
-                offensives = [
-                    p
-                    for sym, p in account.positions.items()
-                    if sym not in safe_havens and p.unrealized_plpc > 0
-                ]
-                offensives.sort(key=lambda p: p.unrealized_plpc, reverse=True)
-                for pos in offensives:
-                    if needed <= 0:
-                        break
-                    price = pos.current_price
-                    if price <= 0:
-                        continue
-                    pos_val = pos.qty * price
-                    val_to_sell = min(pos_val, needed)
-                    qty_to_sell = min(pos.qty, round(val_to_sell / price, 4))
-                    if qty_to_sell <= 0:
-                        continue
-                    dec = risk.evaluate_manual_withdrawal(
-                        pos,
-                        price=price,
-                        qty=qty_to_sell,
-                        now=now,
-                        reason="gain_trim_withdrawal",
-                    )
-                    if not dec.approved or dec.intent is None:
-                        continue
-                    if not settings.dry_run:
-                        if hasattr(broker, "cancel_open_orders"):
-                            broker.cancel_open_orders(pos.symbol)
-                        receipt = broker.submit(dec.intent, now=now)
-                        broker.wait_for_fill(
-                            receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS
-                        )
-                    account.cash += qty_to_sell * price
-                    needed -= qty_to_sell * price
-                    if qty_to_sell >= pos.qty - 1e-6:
-                        account.positions.pop(pos.symbol, None)
-                    else:
-                        pos.qty -= qty_to_sell
-                        if pos.stop_price is not None and not settings.dry_run:
-                            stop_dec = risk.evaluate_stop_replace(pos, price=price, now=now)
-                            if (
-                                stop_dec is not None
-                                and stop_dec.approved
-                                and stop_dec.intent is not None
-                            ):
-                                broker.submit(stop_dec.intent, now=now)
-                    logger.info(
-                        "vente gain %s (+%.1f%%) : %.4f titres @ %.2f$ -> +%.2f$ cash",
-                        pos.symbol,
-                        pos.unrealized_plpc * 100,
-                        qty_to_sell,
-                        price,
-                        qty_to_sell * price,
-                    )
-
-        final_floor = target_cash
-        if not settings.dry_run:
-            update_env_file(
-                PROJECT_ROOT / ".env", {"WITHDRAWABLE_CASH_FLOOR_USD": f"{final_floor:.2f}"}
-            )
-            logger.info(
-                "plancher WITHDRAWABLE_CASH_FLOOR_USD mis à jour à %.2f$ dans .env",
-                final_floor,
-            )
-            persisted.stops = {
-                s: {k: v for k, v in p.stop_state().items() if v is not None}
-                for s, p in account.positions.items()
-            }
-            state_store.save(persisted)
-        else:
-            logger.info(
-                "dry-run : plancher WITHDRAWABLE_CASH_FLOOR_USD serait mis à jour à %.2f$",
-                final_floor,
-            )
+    previous_peak, lifted = RiskEngine(settings.risk).rebase_equity_reference(
+        account, reason=reason
+    )
+    if args.dry_run:
+        payload = {
+            "ok": True,
+            "dry_run": True,
+            "previous_peak": previous_peak,
+            "new_peak": snapshot.equity,
+            "halt_lifted": lifted,
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
-    if getattr(args, "symbol", None):
-        symbol = str(args.symbol).strip().upper()
-        if symbol not in account.positions:
-            logger.error("le symbole %s n'est pas en portefeuille", symbol)
-            return 2
-        pos = account.positions[symbol]
-        price = pos.current_price
-        if price <= 0:
-            logger.error("prix introuvable pour %s", symbol)
-            return 2
-
-        qty: float = 0.0
-        if getattr(args, "amount", None) is not None:
-            amount = float(args.amount)
-            if amount <= 0:
-                logger.error("le montant doit être > 0")
-                return 2
-            qty = min(pos.qty, round(amount / price, 4))
-        elif getattr(args, "pct", None) is not None:
-            pct = float(args.pct)
-            if pct <= 0 or pct > 100:
-                logger.error("le pourcentage doit être compris entre 0 et 100")
-                return 2
-            qty = min(pos.qty, round(pos.qty * (pct / 100.0), 4))
-        else:
-            logger.error("veuillez spécifier soit --amount soit --pct")
-            return 2
-
-        if qty <= 0:
-            logger.error("quantité calculée nulle")
-            return 2
-
-        dec = risk.evaluate_manual_withdrawal(
-            pos, price=price, qty=qty, now=now, reason="manual_withdrawal"
-        )
-        if not dec.approved or dec.intent is None:
-            logger.error("ordre de retrait refusé par le RiskEngine: %s", dec.reason)
-            return 2
-
-        logger.info(
-            "retrait %s : vente de %.4f titres @ %.2f$ (~%.2f$)",
-            symbol,
-            qty,
-            price,
-            qty * price,
-        )
-        if not settings.dry_run:
-            if hasattr(broker, "cancel_open_orders"):
-                broker.cancel_open_orders(symbol)
-            receipt = broker.submit(dec.intent, now=now)
-            broker.wait_for_fill(
-                receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS
-            )
-            account.cash += qty * price
-            if qty >= pos.qty - 1e-6:
-                account.positions.pop(symbol, None)
-            else:
-                pos.qty -= qty
-                if pos.stop_price is not None:
-                    stop_dec = risk.evaluate_stop_replace(pos, price=price, now=now)
-                    if (
-                        stop_dec is not None
-                        and stop_dec.approved
-                        and stop_dec.intent is not None
-                    ):
-                        broker.submit(stop_dec.intent, now=now)
-            persisted.stops = {
-                s: {k: v for k, v in p.stop_state().items() if v is not None}
-                for s, p in account.positions.items()
-            }
-            state_store.save(persisted)
-        return 0
-
-    logger.error(
-        "veuillez spécifier soit --symbol avec (--amount ou --pct), soit --free-cash"
+    state.peak_equity = account.peak_equity
+    state.day_start_equity = account.day_start_equity
+    state.halted = account.halted
+    state.halt_scope = account.halt_scope.value if account.halt_scope else None
+    state.halt_reason = account.halt_reason
+    state_store.save(state)
+    audit.record(
+        "equity_rebase",
+        {
+            "reason": reason,
+            "previous_peak": previous_peak,
+            "new_peak": account.peak_equity,
+            "halt_lifted": lifted,
+            "equity": account.equity,
+        },
     )
-    return 2
+    logger.info(
+        "pic d'équité recalé : %s -> %.2f (%s)",
+        f"{previous_peak:.2f}" if previous_peak is not None else "n/a",
+        account.equity,
+        reason,
+    )
+    payload = {
+        "ok": True,
+        "dry_run": False,
+        "previous_peak": previous_peak,
+        "new_peak": account.equity,
+        "halt_lifted": lifted,
+    }
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2803,6 +2692,21 @@ def build_parser() -> argparse.ArgumentParser:
     withdraw.add_argument("--dry-run", action="store_true", help="simuler sans transmettre")
     withdraw.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     withdraw.set_defaults(func=cmd_withdraw)
+
+    rebase = subparsers.add_parser(
+        "rebase",
+        help="ré-ancrer le pic d'équité après un dépôt ou un retrait chez le courtier",
+    )
+    rebase.add_argument(
+        "--reason",
+        required=True,
+        help="justification en clair, recopiée dans audit.jsonl",
+    )
+    rebase.add_argument(
+        "--dry-run", action="store_true", help="afficher l'effet sans rien enregistrer"
+    )
+    rebase.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    rebase.set_defaults(func=cmd_rebase)
 
     return parser
 

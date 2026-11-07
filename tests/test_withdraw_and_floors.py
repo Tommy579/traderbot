@@ -418,3 +418,137 @@ def test_cmd_withdraw_free_cash_updates_env(
     # Vérification que .env a été mis à jour avec le plancher
     env_content = env_file.read_text(encoding="utf-8")
     assert "WITHDRAWABLE_CASH_FLOOR_USD=10000.00" in env_content
+
+
+def _withdrawal_settings(tmp_path: Path) -> Settings:
+    """Configuration de test isolée du .env réel."""
+    return Settings(
+        _env_file=None,
+        symbols=["AAPL"],
+        state_dir=tmp_path / "state",
+        dry_run=False,
+        safe_haven_enabled=False,
+    )
+
+
+def test_withdrawal_refuses_sale_without_confirmed_cancellation(tmp_path: Path) -> None:
+    """Pas de vente manuelle tant que l'annulation des stops n'est pas confirmée.
+
+    Une jambe de stop survivante peut vendre à découvert après la vente : le
+    chemin de retrait doit donc échouer fermé, exactement comme le cycle de
+    trading quand il liquide une position.
+    """
+    from trading_bot.execution.alpaca_client import BrokerError
+    from trading_bot.withdrawal import WithdrawalService
+
+    class StubbornBroker(FakeBroker):
+        def cancel_open_orders(self, symbol: str) -> int:
+            raise BrokerError("annulation impossible")
+
+    settings = _withdrawal_settings(tmp_path)
+    broker = StubbornBroker(
+        positions={
+            "AAPL": Position(
+                symbol="AAPL", qty=10.0, avg_entry_price=100.0, current_price=100.0
+            )
+        }
+    )
+    service = WithdrawalService(
+        settings,
+        broker,
+        state_store=StateStore(settings.state_dir / "state.json"),
+        env_path=tmp_path / ".env",
+    )
+
+    result = service.withdraw_symbol("AAPL", pct=50)
+
+    assert result.fills == []
+    assert broker.orders == []
+    assert any("annulation" in message for message in result.errors)
+
+
+def test_manual_withdrawal_is_audited(tmp_path: Path) -> None:
+    """Chaque retrait laisse une trace dans audit.jsonl, comme le reste du bot."""
+    from trading_bot.main import AuditLog
+    from trading_bot.withdrawal import WithdrawalService
+
+    settings = _withdrawal_settings(tmp_path)
+    broker = FakeBroker(
+        positions={
+            "AAPL": Position(
+                symbol="AAPL",
+                qty=10.0,
+                avg_entry_price=100.0,
+                current_price=100.0,
+                stop_price=90.0,
+            )
+        }
+    )
+    audit = AuditLog(settings.state_dir / "audit.jsonl")
+    service = WithdrawalService(
+        settings,
+        broker,
+        state_store=StateStore(settings.state_dir / "state.json"),
+        audit=audit,
+        env_path=tmp_path / ".env",
+    )
+
+    result = service.withdraw_symbol("AAPL", pct=50)
+
+    assert result.fills, "la vente doit avoir lieu"
+    events = (settings.state_dir / "audit.jsonl").read_text(encoding="utf-8")
+    assert "risk_decision" in events
+    assert '"withdrawal"' in events
+    assert "cancel_open_orders" in events
+
+
+def test_cmd_rebase_recenters_equity_after_external_cash_movement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un retrait fait chez le courtier ne doit pas ressembler à une perte de 20 %."""
+    from trading_bot.main import cmd_rebase
+
+    state_file = tmp_path / "state.json"
+    store = StateStore(state_file)
+    store.save(
+        PersistedState(
+            trading_day="2024-01-10",
+            day_start_equity=100_000.0,
+            peak_equity=100_000.0,
+            halted=True,
+            halt_scope="permanent",
+            halt_reason="drawdown -20.00% au-delà de la limite -15.00%",
+        )
+    )
+    broker = FakeBroker(equity=80_000.0, cash=80_000.0)
+    settings = Settings(_env_file=None, symbols=["AAPL"], state_dir=tmp_path, dry_run=False)
+    monkeypatch.setattr("trading_bot.main._settings_from_args", lambda args: settings)
+    monkeypatch.setattr("trading_bot.main.AlpacaPaperClient", lambda s: broker)
+    monkeypatch.setattr("trading_bot.main.StateStore", lambda p: store)
+
+    args = argparse.Namespace(
+        reason="retrait de 20 000 $ vers mon compte", dry_run=False, log_level="INFO"
+    )
+    assert cmd_rebase(args) == 0
+
+    state = store.load()
+    assert state.peak_equity == pytest.approx(80_000.0)
+    assert state.day_start_equity == pytest.approx(80_000.0)
+    assert state.halted is False
+    assert state.halt_scope is None
+    audit = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "equity_rebase" in audit
+    assert "retrait de 20 000" in audit
+
+
+def test_cmd_rebase_requires_a_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ré-ancrer le pic est une décision humaine : elle se justifie ou n'a pas lieu."""
+    from trading_bot.main import cmd_rebase
+
+    settings = Settings(_env_file=None, symbols=["AAPL"], state_dir=tmp_path, dry_run=False)
+    monkeypatch.setattr("trading_bot.main._settings_from_args", lambda args: settings)
+
+    args = argparse.Namespace(reason="   ", dry_run=False, log_level="INFO")
+    assert cmd_rebase(args) == 2

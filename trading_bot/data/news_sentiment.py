@@ -570,6 +570,31 @@ class NewsSentimentAnalyzer:
     # ------------------------------------------------------------------
     # Point d'entrée
     # ------------------------------------------------------------------
+    def _reusable(
+        self, assessment: NewsAssessment | None, moment: datetime
+    ) -> NewsAssessment | None:
+        """Note précédente encore dans la fenêtre d'actualités, ou ``None``.
+
+        Une note plus vieille que ``lookback_hours`` porte sur des articles qui
+        ne sont plus dans la fenêtre analysée. La réutiliser laisserait un score
+        d'il y a trois semaines refuser chaque achat du titre — ou déclencher
+        une sortie d'urgence — jusqu'à la prochaine actualité, sans que rien ne
+        le signale. Une note périmée est donc rangée et le symbole redevient
+        neutre.
+        """
+        if assessment is None:
+            return None
+        age = moment - assessment.updated_at
+        if age < timedelta(0) or age > timedelta(hours=self.lookback_hours):
+            LOGGER.info(
+                "note d'actualités périmée pour %s (%.1f h > %d h) : elle est ignorée",
+                assessment.symbol,
+                age.total_seconds() / 3600.0,
+                self.lookback_hours,
+            )
+            return None
+        return assessment
+
     def assess(
         self,
         symbols: Iterable[str],
@@ -602,13 +627,22 @@ class NewsSentimentAnalyzer:
             articles = self.fetch_articles(symbol, now=moment)
             unseen = [a for a in articles if a.article_id not in known_set]
             if not unseen:
-                # Rien de neuf : on réutilise la note précédente. C'est ici
-                # que le module gagne son argument « coût zéro ».
-                results[symbol] = previous.get(symbol) or NewsAssessment.neutral(
-                    symbol,
-                    now=moment,
-                    rationale="aucune actualité récente",
-                )
+                # Rien de neuf : on réutilise la note précédente, à condition
+                # qu'elle soit encore dans la fenêtre. C'est ici que le module
+                # gagne son argument « coût zéro ».
+                previous_note = previous.get(symbol)
+                reusable = self._reusable(previous_note, moment)
+                if reusable is not None:
+                    results[symbol] = reusable
+                else:
+                    rationale = (
+                        "note précédente périmée : aucune actualité récente"
+                        if previous_note is not None
+                        else "aucune actualité récente"
+                    )
+                    results[symbol] = NewsAssessment.neutral(
+                        symbol, now=moment, rationale=rationale
+                    )
             else:
                 assessment, analysed = self._ask_model(symbol, unseen, now=moment)
                 results[symbol] = assessment

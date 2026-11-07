@@ -79,15 +79,22 @@ class FakeWebBroker:
         )
 
     def wait_for_fill(self, order_id, *, timeout_seconds=30.0) -> OrderReceipt:
+        """Rend l'ordre rempli : même quantité que l'intention, comme Alpaca.
+
+        Un ordre partiellement exécuté n'est jamais au statut « filled » (le
+        client lève ``OrderRejectedError``/``OrderTimeoutError``), donc un
+        remplissage complet porte exactement la quantité approuvée.
+        """
         assert self.orders
+        intent = self.orders[-1]
         return OrderReceipt(
             order_id=order_id,
-            client_order_id="c",
-            symbol="AAPL",
-            side=self.orders[-1].side,
-            qty=1.0,
+            client_order_id=intent.client_order_id,
+            symbol=intent.symbol,
+            side=intent.side,
+            qty=intent.qty,
             status="filled",
-            filled_qty=1.0,
+            filled_qty=intent.qty,
             avg_fill_price=100.0,
             submitted_at=NOW,
         )
@@ -860,3 +867,31 @@ def test_withdraw_endpoints_and_floors(settings, web_bars) -> None:
         assert fresh.risk.equity_hard_floor_usd == 50000.0
     finally:
         httpd.shutdown()
+
+
+def test_automation_view_is_cached_between_requests(monkeypatch) -> None:
+    """L'état des timers ne relance pas deux `systemctl` à chaque rafraîchissement."""
+    import subprocess
+    from types import SimpleNamespace
+
+    from trading_bot.web import app as web_app
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(list(command))
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(web_app, "_automation_cache", None)
+
+    first = web_app._automation_view()
+    second = web_app._automation_view()
+
+    # Deux timers inspectés une seule fois, pas une fois par appel.
+    assert len(calls) == 2
+    assert first == second
+
+    web_app._invalidate_automation_cache()
+    web_app._automation_view()
+    assert len(calls) == 4

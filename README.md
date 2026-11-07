@@ -105,7 +105,15 @@ Toute configuration incohérente (par exemple `MAX_DAILY_LOSS_PCT` ≥
 ./tradingbot backtest --refresh       # retélécharge les barres et réécrit state/cache/
 ./tradingbot live --once --dry-run --strategy donchian_breakout
 ./tradingbot live                     # boucle paper (arrêt propre sur SIGINT/SIGTERM)
+./tradingbot withdraw --symbol NVDA --pct 25          # libère du cash sur une ligne
+./tradingbot withdraw --free-cash 20000               # sanctuarise 20 000 $ de cash
+./tradingbot rebase --reason "retrait de 5 000 $ vers mon compte"
 ```
+
+`rebase` ré-ancre le pic d'équité après un dépôt ou un retrait **fait chez le
+courtier**. Sans lui, la baisse d'équité est lue comme une perte et déclenche
+l'arrêt permanent (drawdown fictif) : la commande exige donc sa justification,
+la recopie dans `audit.jsonl` et lève l'arrêt s'il était actif.
 
 Trois moteurs de signaux sont disponibles via `--strategy` (défaut :
 `ema_cross`) :
@@ -180,6 +188,11 @@ et les cycles ignorés (marché fermé) ne notifient pas.
   éditer `.env` à la main (validation + restauration automatique) ;
 * **Comprendre** — glossaire : paper trading, stop, ATR, drawdown,
   coupe-circuit, momentum.
+
+Les retraits manuels (page comme CLI) passent par le **même** service
+(`trading_bot/withdrawal.py`) : annulation des stops vérifiée auprès du courtier
+avant toute vente, décision scellée par le moteur de risque, et trace complète
+dans `audit.jsonl`. Une annulation non confirmée bloque la vente.
 
 Sécurité : écoute sur 127.0.0.1 uniquement, requêtes croix-site refusées
 (en-tête `Origin`), hôte validé, et le mode paper reste verrouillé par
@@ -256,9 +269,9 @@ les résultats du backtest sont reproductibles.
 ## Qualité
 
 ```
-337 tests passés            (env -u PYTHONPATH .venv/bin/python -m pytest -q)
-couverture                  79 % des instructions
-mypy --strict               (26 fichiers source, 0 erreur)
+346 tests passés            (env -u PYTHONPATH .venv/bin/python -m pytest -q)
+couverture                  81 % des instructions
+mypy --strict               (27 fichiers source, 0 erreur)
 ruff check / ruff format    (0 violation)
 ```
 
@@ -280,9 +293,13 @@ réseau.
 * **Fraîcheur des prix** — la boucle live utilise le dernier trade connu du flux
   configuré (`IEX` par défaut, 15 min de retard possible en heures creuses) avec
   repli sur la dernière clôture en cas d'indisponibilité.
+* **Péremption des notes d'actualités** — une note plus vieille que
+  `NEWS_LOOKBACK_HOURS` est ignorée et le symbole redevient neutre : sans cela,
+  un score effondré d'il y a trois semaines refuserait chaque achat jusqu'à la
+  prochaine actualité.
 * **Univers actions uniquement**, long-only, une position par symbole, pas de
   vente à découvert ni d'effet de levier (le sizing plafonne sur les liquidités).
-* **Validation** — les 337 tests et les backtests historiques (yfinance,
+* **Validation** — les 346 tests et les backtests historiques (yfinance,
   AAPL+MSFT 2022-2024, cache disque) ont tourné sur cette machine. La boucle live n'a
   **pas** été exécutée contre un compte Alpaca réel dans cet environnement :
   elle est validée contre des doublures de
@@ -296,6 +313,7 @@ réseau.
 trading_bot/
 ├── config.py              # Settings (Pydantic), RiskConfig, BacktestConfig, garde-fous paper
 ├── clock.py               # horloge alignée sur l'heure en ligne (offset monotonic)
+├── withdrawal.py          # retraits manuels : annulation vérifiée, audit, plancher de cash
 ├── data/
 │   ├── loader.py          # normalisation OHLCV, yfinance, cache disque, indicateurs (pandas-ta + natif)
 │   └── __init__.py
@@ -323,6 +341,6 @@ trading_bot/
 │   ├── alpaca_client.py   # wrapper Alpaca Paper (alpaca-py), idempotence
 │   └── __init__.py
 └── main.py                # boucle live, persistance d'état, audit, CLI
-tests/                     # 337 tests hors ligne
+tests/                     # 346 tests hors ligne
 tradingbot                 # lanceur (uv, PYTHONPATH neutralisé)
 ```

@@ -12,6 +12,7 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -823,3 +824,33 @@ def test_thresholds_are_bounded() -> None:
         RiskConfig(news_veto_threshold=-1.5)
     with pytest.raises(ValidationError):
         RiskConfig(news_veto_threshold=0.5)
+
+
+def test_stale_assessment_is_not_reused(tmp_path: Path) -> None:
+    """Une note plus vieille que la fenêtre d'actualités n'influence plus rien.
+
+    Sans péremption, un score effondré d'il y a trois semaines continue de
+    refuser chaque achat du titre jusqu'à la prochaine actualité.
+    """
+    analyzer = make_analyzer(tmp_path, articles={})
+    stale = make_assessment(-0.95, critical=True)
+    stale = replace(stale, updated_at=NOW - timedelta(hours=30))
+    analyzer._save_state({"NVDA": stale}, [], NOW)
+
+    result = analyzer.assess(["NVDA"], now=NOW)["NVDA"]
+
+    assert result.sentiment_score == 0.0
+    assert result.is_critical_threat is False
+    assert "périmé" in result.rationale
+
+
+def test_fresh_assessment_is_still_reused(tmp_path: Path) -> None:
+    """Une note récente, sans nouvel article, reste valable (coût zéro)."""
+    analyzer = make_analyzer(tmp_path, articles={})
+    fresh = make_assessment(-0.72)
+    analyzer._save_state({"NVDA": fresh}, [], NOW)
+
+    result = analyzer.assess(["NVDA"], now=NOW + timedelta(hours=2))["NVDA"]
+
+    assert result.sentiment_score == pytest.approx(-0.72)
+    assert result.updated_at == fresh.updated_at

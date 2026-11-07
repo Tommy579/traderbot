@@ -25,6 +25,7 @@ import json
 import re
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -53,6 +54,7 @@ from trading_bot.data.loader import (
 from trading_bot.execution.alpaca_client import AlpacaPaperClient, BrokerError
 from trading_bot.history import HistoryStore
 from trading_bot.main import (
+    AuditLog,
     StateStore,
     TradingBot,
     _assess_news,
@@ -60,14 +62,22 @@ from trading_bot.main import (
     _build_notifier,
     _inject_benchmark,
     _symbol_message,
+    _withdrawal_payload,
     build_strategy,
     news_effect_label,
 )
-from trading_bot.risk.engine import AccountState, Position, RiskEngine
+from trading_bot.risk.engine import RiskEngine
 from trading_bot.strategies.base import StrategyError
 from trading_bot.web.jobs import JobManager
+from trading_bot.withdrawal import WithdrawalService
 
 _MAX_BODY_BYTES = 1_000_000
+#: Durée de validité de l'état des timers. Chaque calcul lance deux
+#: ``systemctl --user show`` : la page interroge le statut toutes les deux
+#: secondes, donc sans cache on forkerait un processus par seconde.
+_AUTOMATION_CACHE_TTL_SECONDS = 15.0
+_automation_cache: tuple[float, dict[str, Any]] | None = None
+_automation_lock = threading.Lock()
 _CHART_POINTS = 240
 _UNIT_SERVICE = Path.home() / ".config/systemd/user/tradingbot.service"
 _UNIT_TIMER = Path.home() / ".config/systemd/user/tradingbot.timer"
@@ -199,7 +209,33 @@ def _positions_view(
 
 
 def _automation_view() -> dict[str, Any]:
-    """État des timers (cycle complet et vigie horaire)."""
+    """État des timers, mis en cache quelques secondes.
+
+    Le tableau de bord interroge ``/api/status`` en boucle ; sans cache, chaque
+    requête lancerait deux ``systemctl`` synchrones.
+    """
+    global _automation_cache
+    now = time.monotonic()
+    with _automation_lock:
+        cached = _automation_cache
+        if cached is not None and now - cached[0] < _AUTOMATION_CACHE_TTL_SECONDS:
+            return dict(cached[1])
+
+    view = _compute_automation_view()
+    with _automation_lock:
+        _automation_cache = (now, dict(view))
+    return view
+
+
+def _invalidate_automation_cache() -> None:
+    """Force le prochain calcul de l'état des timers (après une installation)."""
+    global _automation_cache
+    with _automation_lock:
+        _automation_cache = None
+
+
+def _compute_automation_view() -> dict[str, Any]:
+    """État des timers (cycle complet et vigie horaire), sans cache."""
     watch_timer_path = _UNIT_TIMER.parent / "tradingbot-watch.timer"
     view: dict[str, Any] = {
         "timer_installed": _UNIT_TIMER.exists() or watch_timer_path.exists(),
@@ -668,263 +704,76 @@ def _apply_config(
     }
 
 
+def _optional_float(value: Any, message: str) -> float | None:
+    """Convertit une valeur de formulaire en float, ou ``None`` si absente."""
+    if value is None or not str(value).strip():
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(message) from exc
+
+
 def _run_withdraw(
     context: WebContext,
     request: dict[str, Any],
 ) -> dict[str, Any]:
-    """Exécute un retrait de cash partiel ou global avec validation du RiskEngine."""
+    """Exécute un retrait via le service partagé avec la commande ``withdraw``.
+
+    Toute la mécanique (annulation vérifiée des stops, validation par le moteur
+    de risque, audit, plancher de cash) vit dans ``trading_bot.withdrawal`` :
+    l'interface ne fait que traduire le formulaire et le résultat.
+    """
     with context.cycle_lock:
         settings = _refresh_settings(context)
         broker = context.broker_factory(settings)
-        risk = RiskEngine(settings.risk)
-        state_store = StateStore(settings.state_dir / "state.json")
-        persisted = state_store.load()
-
-        snapshot = broker.get_account()
-        positions = broker.get_positions()
-        restored: dict[str, Position] = {}
-        for sym, pos in positions.items():
-            stored = persisted.stops.get(sym)
-            if stored:
-                pos.apply_stop_state(stored)
-            restored[sym] = pos
-
-        account = AccountState(
-            equity=snapshot.equity,
-            cash=snapshot.cash,
-            buying_power=snapshot.buying_power,
-            positions=restored,
+        service = WithdrawalService(
+            settings,
+            broker,
+            state_store=StateStore(settings.state_dir / "state.json"),
+            audit=AuditLog(settings.state_dir / "audit.jsonl"),
+            env_path=context.env_path,
         )
-        now = get_online_now()
-        executed_orders: list[dict[str, Any]] = []
 
-        if request.get("free_cash") is not None and str(request["free_cash"]).strip():
-            try:
-                target_cash = float(request["free_cash"])
-            except (ValueError, TypeError) as exc:
-                raise ValueError("Le montant de cash cible est invalide.") from exc
-            if target_cash <= 0:
-                raise ValueError(
-                    "Le montant de cash cible doit être strictement supérieur à 0."
-                )
-
-            needed = target_cash - account.cash
-            if needed > 0:
-                safe_havens = set(settings.safe_haven_symbols)
-                # 1. Vente des positions safe haven en priorité
-                for sym in [
-                    s for s in settings.safe_haven_symbols if s in account.positions
-                ]:
-                    if needed <= 0:
-                        break
-                    pos = account.positions[sym]
-                    price = pos.current_price
-                    if price <= 0:
-                        continue
-                    pos_val = pos.qty * price
-                    val_to_sell = min(pos_val, needed)
-                    qty_to_sell = min(pos.qty, round(val_to_sell / price, 4))
-                    if qty_to_sell <= 0:
-                        continue
-                    dec = risk.evaluate_manual_withdrawal(
-                        pos,
-                        price=price,
-                        qty=qty_to_sell,
-                        now=now,
-                        reason="safe_haven_withdrawal",
-                    )
-                    if not dec.approved or dec.intent is None:
-                        continue
-                    if not settings.dry_run:
-                        if hasattr(broker, "cancel_open_orders"):
-                            broker.cancel_open_orders(sym)
-                        receipt = broker.submit(dec.intent, now=now)
-                        broker.wait_for_fill(receipt.order_id, timeout_seconds=30.0)
-                    account.cash += qty_to_sell * price
-                    needed -= qty_to_sell * price
-                    executed_orders.append(
-                        {
-                            "symbol": sym,
-                            "qty": qty_to_sell,
-                            "price": price,
-                            "cash_freed": round(qty_to_sell * price, 2),
-                            "reason": "Repli défensif",
-                        }
-                    )
-                    if qty_to_sell >= pos.qty - 1e-6:
-                        account.positions.pop(sym, None)
-                    else:
-                        pos.qty -= qty_to_sell
-
-                # 2. Si insuffisant, positions offensives les plus gagnantes
-                if needed > 0:
-                    offensives = [
-                        p
-                        for sym, p in account.positions.items()
-                        if sym not in safe_havens and p.unrealized_pnl_pct > 0
-                    ]
-                    offensives.sort(key=lambda p: p.unrealized_pnl_pct, reverse=True)
-                    for pos in offensives:
-                        if needed <= 0:
-                            break
-                        price = pos.current_price
-                        if price <= 0:
-                            continue
-                        pos_val = pos.qty * price
-                        val_to_sell = min(pos_val, needed)
-                        qty_to_sell = min(pos.qty, round(val_to_sell / price, 4))
-                        if qty_to_sell <= 0:
-                            continue
-                        dec = risk.evaluate_manual_withdrawal(
-                            pos,
-                            price=price,
-                            qty=qty_to_sell,
-                            now=now,
-                            reason="gain_trim_withdrawal",
-                        )
-                        if not dec.approved or dec.intent is None:
-                            continue
-                        if not settings.dry_run:
-                            if hasattr(broker, "cancel_open_orders"):
-                                broker.cancel_open_orders(pos.symbol)
-                            receipt = broker.submit(dec.intent, now=now)
-                            broker.wait_for_fill(receipt.order_id, timeout_seconds=30.0)
-                        account.cash += qty_to_sell * price
-                        needed -= qty_to_sell * price
-                        executed_orders.append(
-                            {
-                                "symbol": pos.symbol,
-                                "qty": qty_to_sell,
-                                "price": price,
-                                "cash_freed": round(qty_to_sell * price, 2),
-                                "reason": f"Plus-value offensive (+{pos.unrealized_pnl_pct * 100:.1f}%)",
-                            }
-                        )
-                        if qty_to_sell >= pos.qty - 1e-6:
-                            account.positions.pop(pos.symbol, None)
-                        else:
-                            pos.qty -= qty_to_sell
-                            if pos.stop_price is not None and not settings.dry_run:
-                                stop_dec = risk.evaluate_stop_replace(
-                                    pos, price=price, now=now
-                                )
-                                if (
-                                    stop_dec is not None
-                                    and stop_dec.approved
-                                    and stop_dec.intent is not None
-                                ):
-                                    broker.submit(stop_dec.intent, now=now)
-
-            final_floor = target_cash
-            if not settings.dry_run:
-                _update_env(
-                    context.env_path, {"WITHDRAWABLE_CASH_FLOOR_USD": f"{final_floor:.2f}"}
-                )
-                context.settings = Settings(_env_file=str(context.env_path))
-                context.env_mtime = _env_mtime(context.env_path)
-                persisted.stops = {
-                    s: {k: v for k, v in p.stop_state().items() if v is not None}
-                    for s, p in account.positions.items()
-                }
-                state_store.save(persisted)
-
-            msg = (
-                f"Cash cible de {target_cash:.2f} $ atteint. "
-                f"Plancher sanctuarisé dans .env ({len(executed_orders)} ordre(s) exécuté(s))."
+        free_cash = _optional_float(
+            request.get("free_cash"), "Le montant de cash cible est invalide."
+        )
+        if free_cash is not None:
+            result = service.withdraw_free_cash(free_cash)
+            context.settings = Settings(_env_file=str(context.env_path))
+            context.env_mtime = _env_mtime(context.env_path)
+            payload = _withdrawal_payload("free_cash", result)
+            payload["orders"] = payload.pop("fills")
+            payload["withdrawable_floor"] = free_cash
+            payload["message"] = (
+                f"Cash cible de {free_cash:.2f} $ atteint. "
+                f"Plancher sanctuarisé dans .env ({len(result.fills)} ordre(s) exécuté(s))."
             )
-            return {
-                "ok": True,
-                "message": msg,
-                "orders": executed_orders,
-                "cash": account.cash,
-                "withdrawable_floor": final_floor,
-            }
+            if not payload["ok"]:
+                payload["error"] = " ; ".join(result.errors)
+            return payload
 
         symbol = str(request.get("symbol") or "").strip().upper()
         if not symbol:
             raise ValueError(
                 "Veuillez sélectionner un symbole ou renseigner un montant de cash global."
             )
-        if symbol not in account.positions:
-            raise ValueError(f"Le symbole {symbol} n'est pas en portefeuille.")
-
-        pos = account.positions[symbol]
-        price = pos.current_price
-        if price <= 0:
-            raise ValueError(f"Prix actuel indisponible pour {symbol}.")
-
-        qty: float = 0.0
-        amount = request.get("amount")
-        pct = request.get("pct")
-        if amount is not None and str(amount).strip():
-            try:
-                amt_val = float(amount)
-            except (ValueError, TypeError) as exc:
-                raise ValueError("Montant en dollars invalide.") from exc
-            if amt_val <= 0:
-                raise ValueError("Le montant doit être strictement positif.")
-            qty = min(pos.qty, round(amt_val / price, 4))
-        elif pct is not None and str(pct).strip():
-            try:
-                pct_val = float(pct)
-            except (ValueError, TypeError) as exc:
-                raise ValueError("Pourcentage invalide.") from exc
-            if pct_val <= 0 or pct_val > 100:
-                raise ValueError("Le pourcentage doit être compris entre 1 et 100.")
-            qty = min(pos.qty, round(pos.qty * (pct_val / 100.0), 4))
-        else:
-            raise ValueError(
-                "Veuillez renseigner un montant ($) ou un pourcentage (%) à retirer."
-            )
-
-        if qty <= 0:
-            raise ValueError("La quantité calculée est nulle.")
-
-        dec = risk.evaluate_manual_withdrawal(
-            pos, price=price, qty=qty, now=now, reason="manual_withdrawal"
+        result = service.withdraw_symbol(
+            symbol,
+            amount=_optional_float(request.get("amount"), "Montant en dollars invalide."),
+            pct=_optional_float(request.get("pct"), "Pourcentage invalide."),
         )
-        if not dec.approved or dec.intent is None:
-            raise ValueError(f"Ordre refusé par le moteur de risque : {dec.reason}")
-
-        if not settings.dry_run:
-            if hasattr(broker, "cancel_open_orders"):
-                broker.cancel_open_orders(symbol)
-            receipt = broker.submit(dec.intent, now=now)
-            broker.wait_for_fill(receipt.order_id, timeout_seconds=30.0)
-            account.cash += qty * price
-            if qty >= pos.qty - 1e-6:
-                account.positions.pop(symbol, None)
-            else:
-                pos.qty -= qty
-                if pos.stop_price is not None:
-                    stop_dec = risk.evaluate_stop_replace(pos, price=price, now=now)
-                    if (
-                        stop_dec is not None
-                        and stop_dec.approved
-                        and stop_dec.intent is not None
-                    ):
-                        broker.submit(stop_dec.intent, now=now)
-            persisted.stops = {
-                s: {k: v for k, v in p.stop_state().items() if v is not None}
-                for s, p in account.positions.items()
-            }
-            state_store.save(persisted)
-
-        executed_orders.append(
-            {
-                "symbol": symbol,
-                "qty": qty,
-                "price": price,
-                "cash_freed": round(qty * price, 2),
-                "reason": "Vente manuelle",
-            }
+        payload = _withdrawal_payload("symbol", result)
+        payload["orders"] = payload.pop("fills")
+        if not payload["ok"]:
+            payload["error"] = " ; ".join(result.errors) or "Le retrait n'a pas abouti."
+            return payload
+        fill = result.fills[0]
+        payload["message"] = (
+            f"Retrait de {fill.qty:.4f} {fill.symbol} exécuté "
+            f"(~{fill.cash_freed:.2f} $ dégagés)."
         )
-        return {
-            "ok": True,
-            "message": f"Retrait de {qty:.4f} {symbol} exécuté (~{qty * price:.2f} $ dégagés).",
-            "orders": executed_orders,
-            "cash": account.cash,
-        }
+        return payload
 
 
 def _reset_permanent_halt(
@@ -978,6 +827,7 @@ def _install_automation(
         raise ValueError(
             f"L'installation a échoué (code {completed.returncode}) : {output}"
         )
+    _invalidate_automation_cache()
     return {
         "ok": True,
         "message": f"Pilotage automatique activé avec la stratégie {strategy}.",

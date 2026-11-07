@@ -1506,6 +1506,45 @@ class RiskEngine:
             raise RiskError("P&L réalisé non fini")
         account.realized_pnl_today += amount
 
+    def rebase_equity_reference(
+        self, account: AccountState, *, reason: str
+    ) -> tuple[float | None, bool]:
+        """Ré-ancre le pic et l'équité de séance sur l'équité courante.
+
+        Un dépôt ou un retrait effectué chez le courtier modifie l'équité sans
+        qu'aucun trade n'ait eu lieu : le drawdown mesuré depuis l'ancien pic
+        devient fictif et déclenche l'arrêt permanent. Cette opération, toujours
+        justifiée par l'appelant, recale la référence et lève l'arrêt permanent
+        s'il était actif — c'est précisément l'intervention humaine que
+        :meth:`reset_permanent_halt` exige.
+
+        Args:
+            account: État du compte, modifié sur place.
+            reason: Justification en clair (auditée par l'appelant).
+
+        Returns:
+            ``(ancien pic, arrêt permanent levé)``.
+
+        Raises:
+            RiskError: si la justification est vide.
+        """
+        if not reason.strip():
+            raise RiskError("une justification est requise pour ré-ancrer l'équité")
+        if not math.isfinite(account.equity) or account.equity < 0:
+            raise RiskError(f"équité invalide: {account.equity!r}")
+
+        previous_peak = account.peak_equity
+        account.peak_equity = account.equity
+        account.day_start_equity = account.equity
+        account.realized_pnl_today = 0.0
+        lifted = account.halt_scope is HaltScope.PERMANENT
+        if lifted:
+            account.halted = False
+            account.halt_scope = None
+            account.halt_reason = None
+        self._resumptions.append(reason.strip())
+        return previous_peak, lifted
+
     def reset_permanent_halt(self, account: AccountState, *, reason: str) -> None:
         """Lève un arrêt définitif après inspection humaine explicite."""
         if account.halt_scope is not HaltScope.PERMANENT:
