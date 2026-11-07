@@ -1,6 +1,10 @@
 /* Logique du tableau de bord TradingBot.
    Extraite de index.html ; chargée avec defer, donc le DOM est prêt. */
 "use strict";
+
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
 function toast(text, kind = 'info') {
   const container = $('#toast-container');
   const el = document.createElement('div');
@@ -28,7 +32,6 @@ function setLoading(btnId, isLoading, text = null) {
   }
 }
 
-const $ = (sel) => document.querySelector(sel);
 const STRATEGIES = {
   donchian_breakout: {
     name: "Cassure de tendance", code: "donchian_breakout",
@@ -267,9 +270,9 @@ function renderAllocation(account, positions, settings) {
       ${floor > 0 ? `<div class="alloc-seg floor-cash" style="width:${wFloor.toFixed(1)}%" title="Cash sanctuarisé : ${money(floor)}"></div>` : ""}
     </div>
     <div class="alloc-legend">
-      <span><i class="alloc-dot" style="background:var(--series-1)"></i>Actions : <b>${money(invested)}</b> (${wInvested.toFixed(0)} %)</span>
-      <span><i class="alloc-dot" style="background:var(--good)"></i>Cash libre : <b>${money(freeCash)}</b> (${wFree.toFixed(0)} %)</span>
-      ${floor > 0 ? `<span><i class="alloc-dot" style="background:var(--series-2)"></i>Cash sanctuarisé : <b>${money(floor)}</b> (${wFloor.toFixed(0)} %)</span>` : ""}
+      <span><i class="alloc-dot invested"></i>Actions : <b>${money(invested)}</b> (${wInvested.toFixed(0)} %)</span>
+      <span><i class="alloc-dot free-cash"></i>Cash libre : <b>${money(freeCash)}</b> (${wFree.toFixed(0)} %)</span>
+      ${floor > 0 ? `<span><i class="alloc-dot floor-cash"></i>Cash sanctuarisé : <b>${money(floor)}</b> (${wFloor.toFixed(0)} %)</span>` : ""}
     </div>
   </div>`;
 }

@@ -33,7 +33,7 @@
       <span class="live-dot" aria-hidden="true"></span>
       <span>Direct</span>
     </button>
-    <button id="btn-refresh" class="secondary" type="button" style="padding:7px 12px;font-size:13px;border-radius:8px">Actualiser</button>
+    <button id="btn-refresh" class="secondary" type="button">Actualiser</button>
     <nav role="tablist" aria-label="Sections du tableau de bord">
       <button role="tab" id="tab-dashboard" data-tab="dashboard" aria-controls="dashboard" aria-selected="true" tabindex="0" class="active">Tableau de bord</button>
       <button role="tab" id="tab-history" data-tab="history" aria-controls="history" aria-selected="false" tabindex="-1">Historique</button>
@@ -77,7 +77,7 @@
       <h2>Votre compte d'entraînement</h2>
       <p class="hint">Le marché est <b id="market-state">…</b>. Valeurs en dollars fictifs.</p>
       <div class="tiles">
-        <div class="tile"><div class="label">Valeur totale</div><div class="value" id="t-equity">…</div></div>
+        <div class="tile tile-hero"><div class="label">Valeur totale</div><div class="value" id="t-equity">…</div></div>
         <div class="tile"><div class="label">Cash disponible</div><div class="value" id="t-cash">…</div></div>
         <div class="tile"><div class="label">Actions détenues</div><div class="value" id="t-count">…</div></div>
         <div class="tile"><div class="label">Gains / pertes latents</div><div class="value" id="t-pnl">…</div></div>
@@ -178,7 +178,7 @@
       <div class="actions">
         <button class="secondary" id="btn-cycle-watch" type="button">Vigie horaire immédiate</button>
         <button class="secondary" id="btn-cycle-dry" type="button">Répétition générale (aucun ordre)</button>
-        <button class="primary" id="btn-cycle-live" type="button">Cycle complet (compte fictif)</button>
+        <button class="secondary" id="btn-cycle-live" type="button">Cycle complet (compte fictif)</button>
       </div>
       <div class="msg" id="cycle-msg" role="status" aria-live="polite"></div>
       <div id="cycle-result" aria-live="polite"></div>
@@ -218,7 +218,7 @@
           <label for="withdraw-free-cash">Montant de cash cible ($)</label>
           <input id="withdraw-free-cash" type="number" step="any" min="0" placeholder="Ex: 1000">
           <div class="actions" style="margin-top:12px">
-            <button class="primary" id="btn-withdraw-free" type="button">Dégager et sanctuariser</button>
+            <button class="secondary" id="btn-withdraw-free" type="button">Dégager et sanctuariser</button>
           </div>
         </div>
       </div>

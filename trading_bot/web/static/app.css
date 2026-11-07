@@ -158,7 +158,7 @@ nav button:hover:not(.active) {
 nav button.active,
 nav[role="tablist"] button[aria-selected="true"] {
   background: var(--surface-1);
-  color: var(--ink);
+  color: var(--series-1);
   font-weight: 650;
   border-color: var(--card-border);
   box-shadow: var(--shadow-sm);
@@ -507,14 +507,15 @@ button.secondary {
 }
 
 button.primary {
-  background: var(--btn);
-  color: var(--plane);
-  border: 1px solid var(--btn);
-  box-shadow: var(--shadow-sm);
+  background: var(--series-1);
+  color: #ffffff;
+  border: 1px solid var(--series-1);
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.25);
 }
 
 button.primary:hover:not(:disabled) {
-  opacity: 0.92;
+  filter: brightness(1.08);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
 }
 
 button.secondary {
@@ -972,3 +973,132 @@ main:focus { outline: none; }
   }
   button:active { transform: none; }
 }
+
+/* =====================================================================
+   Raffinement visuel — règle « 2 calmes + 1 forte » (60-30-10)
+   Calme 1 = --plane (fond) · Calme 2 = --surface-1 (cartes)
+   Forte   = --series-1 (CTA unique, onglet actif, sélection)
+   ===================================================================== */
+
+/* Sombre : ardoise légèrement bleutée, plus « terminal pro » que le noir vert. */
+:root[data-theme="dark"] {
+  --surface-1: #121620;
+  --surface-2: #1a1f2b;
+  --plane: #0a0d14;
+  --ink: #e8eaf0;
+  --ink-2: #a3a9b8;
+  --muted: #6f7686;
+  --card-border: #232a38;
+  --border: var(--card-border);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface-1: #121620;
+    --surface-2: #1a1f2b;
+    --plane: #0a0d14;
+    --ink: #e8eaf0;
+    --ink-2: #a3a9b8;
+    --muted: #6f7686;
+    --card-border: #232a38;
+    --border: var(--card-border);
+  }
+}
+
+/* Clair : neutres froids, cohérents avec l'accent cobalt. */
+:root:not([data-theme="dark"]) {
+  --plane: #f5f6f8;
+  --surface-2: #eef0f3;
+  --card-border: #e2e5ea;
+  --ink: #0f1420;
+  --ink-2: #4a5263;
+  --muted: #7c8495;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    --plane: #0a0d14;
+    --surface-2: #1a1f2b;
+    --card-border: #232a38;
+    --ink: #e8eaf0;
+    --ink-2: #a3a9b8;
+    --muted: #6f7686;
+  }
+}
+
+/* En-tête : plus d'air, contrôles alignés, bouton Actualiser homogène. */
+header { padding: 14px 28px; }
+#btn-refresh { padding: 7px 12px; font-size: 13px; border-radius: 8px; }
+.brand h1 { font-size: 16.5px; letter-spacing: -0.02em; }
+
+/* Cartes : bordure fine, titres plus nets, survol discret. */
+main { max-width: 1080px; padding-top: 28px; }
+.card {
+  border-radius: 16px;
+  padding: 22px 24px;
+  margin-bottom: 18px;
+  transition: border-color 0.2s ease;
+}
+.card:hover { border-color: color-mix(in srgb, var(--muted) 35%, var(--card-border)); }
+.card h2 { font-size: 15.5px; letter-spacing: -0.015em; }
+.summary-card { background: var(--surface-1); }
+
+/* Tuiles : la valeur totale devient le chiffre héros. */
+.tile {
+  background: var(--surface-1);
+  padding: 15px 17px;
+  gap: 6px;
+}
+.tile .label { font-size: 11px; color: var(--muted); letter-spacing: 0.07em; }
+.tile .value {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.tile-hero { background: var(--plane); }
+.tile-hero .value { font-size: 28px; }
+
+/* Barre d'allocation : neutres uniquement (la forte reste réservée à l'action). */
+.alloc-track { height: 8px; border: none; }
+.alloc-seg { border-right: 2px solid var(--surface-1); }
+.alloc-seg:last-child { border-right: none; }
+.alloc-seg.invested { background: var(--ink); }
+.alloc-seg.free-cash { background: color-mix(in srgb, var(--ink) 45%, var(--surface-2)); }
+.alloc-seg.floor-cash { background: color-mix(in srgb, var(--ink) 18%, var(--surface-2)); }
+
+/* Tableaux : en-têtes plus légers, survol neutre. */
+th { background: transparent; color: var(--muted); font-size: 11px; letter-spacing: 0.07em; }
+tbody tr:hover td { background: var(--plane); }
+td.num, .num { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; font-size: 13.5px; }
+
+/* Bouton principal : seul élément en couleur forte de l'écran. */
+button.primary { padding: 10px 20px; letter-spacing: -0.005em; }
+button.primary:focus-visible { outline-color: var(--ink); }
+
+/* Onglet actif : pastille d'accent sous le libellé. */
+nav[role="tablist"] button[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 14px;
+  height: 2px;
+  margin-left: -7px;
+  border-radius: 2px;
+  background: var(--series-1);
+}
+
+/* Messages info : neutres pour ne pas concurrencer le CTA. */
+.msg.info {
+  background: var(--plane);
+  border-color: var(--card-border);
+  color: var(--ink-2);
+}
+.toast.info { border-left-color: var(--ink-2); }
+
+@media (max-width: 720px) {
+  header { padding: 12px 14px; }
+  .card { padding: 18px; border-radius: 14px; }
+  .tile-hero { grid-column: 1 / -1; }
+}
+.alloc-dot.invested { background: var(--ink); }
+.alloc-dot.free-cash { background: color-mix(in srgb, var(--ink) 45%, var(--surface-2)); }
+.alloc-dot.floor-cash { background: color-mix(in srgb, var(--ink) 18%, var(--surface-2)); }
