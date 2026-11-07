@@ -380,6 +380,13 @@ class ShieldSwordStrategy(Strategy):
     def explain(self, prepared: pd.DataFrame, action: SignalType) -> str:
         """Explication lisible du signal produit."""
         sym = self._current_symbol
+        if sym and (
+            sym in self._params.shield_symbols or sym == self._params.shield_symbol
+        ):
+            return (
+                f"Bouclier : {sym} actif défensif, financé par le cycle "
+                "(sans stop, sans écrémage)"
+            )
         top_n = self._params.sword_top_n
         sma_p = self._params.sword_trend_sma
         if action is SignalType.BUY:

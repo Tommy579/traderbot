@@ -63,6 +63,7 @@ from trading_bot.main import (
     _inject_benchmark,
     _symbol_message,
     _withdrawal_payload,
+    apply_equity_rebase,
     build_strategy,
     news_effect_label,
 )
@@ -203,6 +204,7 @@ def _positions_view(
                 "pnl_pct": position.unrealized_pnl_pct,
                 "stop_price": stored.get("stop_price"),
                 "partial_tp_taken": stored.get("partial_tp_taken", False),
+                "is_shield": symbol == settings.risk.shield_symbol,
             }
         )
     return rows
@@ -313,6 +315,11 @@ def _run_check(
             f"{settings.benchmark_symbol} écarté de l'univers : il sert de référence"
         )
     symbols = _tradable_symbols(symbols, settings.benchmark_symbol)
+    # Le Bouclier fait partie du portefeuille que le cycle va construire : le
+    # diagnostic doit le montrer, sinon il annonce une allocation incomplète.
+    shield_symbol = getattr(getattr(strategy, "params", None), "shield_symbol", None)
+    if isinstance(shield_symbol, str) and shield_symbol not in symbols:
+        symbols = [*symbols, shield_symbol]
     # Le nom du benchmark vient de la configuration ; la stratégie ne dit que
     # s'il lui en faut un. Se fier à sa valeur interne ferait diverger le
     # diagnostic d'un bot configuré sur une autre référence.
@@ -394,7 +401,7 @@ def _run_check(
             "price": signal.price,
             "atr": atr,
             "proposed_stop": round(signal.price - atr * settings.risk.atr_stop_multiple, 2)
-            if atr > 0
+            if atr > 0 and not engine.is_defensive_symbol(symbol)
             else None,
             "as_of": signal.as_of.isoformat(),
         }
@@ -805,6 +812,38 @@ def _reset_permanent_halt(
     }
 
 
+def _rebase(context: WebContext, request: dict[str, Any]) -> dict[str, Any]:
+    """Ré-ancre la référence d'équité après un dépôt ou un retrait chez Alpaca.
+
+    Même opération que ``./tradingbot rebase`` : sans elle, un retrait de 20 %
+    est lu comme une perte et le robot s'arrête définitivement.
+    """
+    reason = str(request.get("reason") or "").strip()
+    if not reason:
+        raise ValueError(
+            "Expliquez en une phrase le mouvement de cash "
+            "(par exemple « retrait de 5 000 $ vers mon compte »)."
+        )
+    settings = _refresh_settings(context)
+    broker = context.broker_factory(settings)
+    payload = apply_equity_rebase(
+        settings,
+        broker.get_account(),
+        reason=reason,
+        state_store=StateStore(settings.state_dir / "state.json"),
+        audit=AuditLog(settings.state_dir / "audit.jsonl"),
+    )
+    previous = payload["previous_peak"] or 0.0
+    return {
+        "ok": True,
+        "message": (
+            f"Référence recalée sur {payload['new_peak']:.2f} $ "
+            f"(pic précédent : {previous:.2f} $)."
+        ),
+        **payload,
+    }
+
+
 def _install_automation(
     context: WebContext,
     request: dict[str, Any],
@@ -913,6 +952,8 @@ def _status_payload(context: WebContext) -> dict[str, Any]:
             "partial_take_profit_sell_ratio": settings.risk.partial_take_profit_sell_ratio,
             "max_single_position_weight": settings.risk.max_single_position_weight,
             "safe_haven_symbols": settings.safe_haven_symbols,
+            "shield_symbol": settings.risk.shield_symbol,
+            "shield_allocation_pct": settings.shield_allocation_pct,
         },
     }
     try:
@@ -1121,6 +1162,8 @@ def build_handler(context: WebContext) -> type[BaseHTTPRequestHandler]:
                 return _install_automation(context, request)
             if path == "/api/halt/reset":
                 return _reset_permanent_halt(context, request)
+            if path == "/api/rebase":
+                return _rebase(context, request)
             if path == "/api/config":
                 return _apply_config(context, request)
             if path == "/api/withdraw":

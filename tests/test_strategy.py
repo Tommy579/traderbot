@@ -484,3 +484,17 @@ def test_shield_immunity_from_stops_and_take_profit() -> None:
     )
     assert engine.update_trailing_stop(pos_sgov, price=125.0, atr=0.10) is None
     assert engine.evaluate_partial_take_profit(pos_sgov, price=125.0, now=now) is None
+
+
+def test_shield_symbol_explanation_names_the_shield(bars_factory) -> None:
+    """Le diagnostic doit dire « Bouclier », pas « conservation entre rebalancements »."""
+    n = 260
+    bars = bars_factory(_rising_closes(n, 1.001), start="2023-01-02")
+    bench = bars_factory(_rising_closes(n, 1.002), start="2023-01-02")
+    strategy = ShieldSwordStrategy(ShieldSwordParams(shield_symbol="SHV"), benchmark=bench)
+
+    signal = strategy.latest_signal(bars, symbol="SHV")
+
+    assert signal.action is SignalType.HOLD
+    assert "actif défensif" in signal.reason
+    assert "rebalancement" not in signal.reason

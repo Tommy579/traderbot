@@ -895,3 +895,61 @@ def test_automation_view_is_cached_between_requests(monkeypatch) -> None:
     web_app._invalidate_automation_cache()
     web_app._automation_view()
     assert len(calls) == 4
+
+
+def test_check_diagnosis_includes_the_shield_symbol(settings, bars_factory) -> None:
+    """Le diagnostic annonce le Bouclier : c'est lui qui portera 70 % de l'équité."""
+    from trading_bot.web.app import _run_check
+
+    bars = bars_factory([100.0 + 0.2 * i for i in range(260)], start="2023-01-02")
+    shield_settings = Settings(
+        _env_file=None,
+        symbols=["AAPL"],
+        state_dir=settings.state_dir,
+        shield_symbol="SHV",
+        safe_haven_enabled=False,
+    )
+    broker = FakeWebBroker({"AAPL": bars, "SHV": bars, "SPY": bars})
+
+    payload = _run_check(shield_settings, lambda s: broker, "shield_sword", ["AAPL"])
+
+    symbols = {row["symbol"] for row in payload["signals"]}
+    assert "SHV" in symbols
+
+
+def test_rebase_endpoint_recenters_equity(settings, web_bars) -> None:
+    """L'interface expose le ré-ancrage du pic, avec justification obligatoire."""
+    from trading_bot.web.app import _rebase
+
+    store = StateStore(settings.state_dir / "state.json")
+    store.save(
+        PersistedState(
+            peak_equity=120_000.0,
+            day_start_equity=120_000.0,
+            halted=True,
+            halt_scope="permanent",
+            halt_reason="drawdown -16.67% au-delà de la limite -15.00%",
+        )
+    )
+    context = make_context(settings, web_bars)
+
+    payload = _rebase(context, {"reason": "retrait de 20 000 $ vers mon compte"})
+
+    assert payload["ok"] is True
+    assert payload["new_peak"] == pytest.approx(100_000.0)
+    assert payload["halt_lifted"] is True
+    state = store.load()
+    assert state.halted is False
+    assert state.peak_equity == pytest.approx(100_000.0)
+    assert "equity_rebase" in (settings.state_dir / "audit.jsonl").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_rebase_endpoint_requires_a_reason(settings, web_bars) -> None:
+    """Sans justification, l'action est refusée : elle est auditée et lourde de sens."""
+    from trading_bot.web.app import _rebase
+
+    context = make_context(settings, web_bars)
+    with pytest.raises(ValueError, match="Expliquez"):
+        _rebase(context, {"reason": "   "})

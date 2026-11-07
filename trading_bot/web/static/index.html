@@ -438,6 +438,17 @@
             <button class="primary" id="btn-withdraw-free">Dégager et sanctuariser</button>
           </div>
         </div>
+
+        <!-- Option 3 : mouvement de cash fait chez le courtier -->
+        <div class="subcard">
+          <h3 style="margin-top:0;font-size:15px">Dépôt ou retrait fait chez Alpaca</h3>
+          <p class="small hint">Si vous avez bougé de l'argent depuis votre compte Alpaca, recalez la référence : sinon la baisse est lue comme une perte et le robot s'arrête définitivement.</p>
+          <label>Ce que vous avez fait</label>
+          <input id="rebase-reason" type="text" placeholder="Ex: retrait de 5 000 $ vers mon compte">
+          <div class="actions" style="margin-top:12px">
+            <button class="secondary" id="btn-rebase">Recaler la référence</button>
+          </div>
+        </div>
       </div>
       <div class="msg" id="withdraw-msg"></div>
       <div id="withdraw-result" style="margin-top:10px"></div>
@@ -696,8 +707,8 @@ function renderPositions(rows) {
     ${rows.map(p => `<tr><td><b>${esc(p.symbol)}</b></td>
       <td class="num">${p.qty}</td><td class="num">${money2(p.entry_price)}</td><td class="num">${money2(p.current_price)}</td>
       <td class="num ${cls(p.pnl)}">${money2(p.pnl)}<br><small>${pct(p.pnl_pct)}</small></td>
-      <td class="num">${p.stop_price ? money2(p.stop_price) : "—"}</td>
-      <td>${p.partial_tp_taken ? `<span class="badge ok">TP 50 % pris (Break-Even)</span>` : `<span class="badge">Actif</span>`}</td></tr>`).join("")}
+      <td class="num">${p.is_shield ? "—<br><small>sans stop</small>" : (p.stop_price ? money2(p.stop_price) : "—")}</td>
+      <td>${p.is_shield ? `<span class="badge ok">Bouclier</span>` : (p.partial_tp_taken ? `<span class="badge ok">TP 50 % pris (Break-Even)</span>` : `<span class="badge">Actif</span>`)}</td></tr>`).join("")}
     </tbody></table></div>`;
 }
 function renderAutomation(a) {
@@ -1390,6 +1401,26 @@ $("#btn-withdraw-pos")?.addEventListener("click", async () => {
     msg("withdraw-msg", e.message, "err");
   } finally {
     setLoading("btn-withdraw-pos", false);
+  }
+});
+
+$("#btn-rebase")?.addEventListener("click", async () => {
+  const reason = ($("#rebase-reason").value || "").trim();
+  if (!reason) {
+    msg("withdraw-msg", "Décrivez le mouvement de cash (ex. « retrait de 5 000 $ »).", "err");
+    return;
+  }
+  if (!confirm("Recaler la référence d'équité sur la valeur actuelle ? Le pic précédent sera oublié.")) return;
+  setLoading("btn-rebase", true, "Recalage...");
+  try {
+    const out = await api("/api/rebase", { reason });
+    msg("withdraw-msg", out.message, "ok");
+    $("#rebase-reason").value = "";
+    refreshStatus();
+  } catch (e) {
+    msg("withdraw-msg", e.message, "err");
+  } finally {
+    setLoading("btn-rebase", false);
   }
 });
 

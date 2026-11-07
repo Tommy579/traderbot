@@ -183,11 +183,18 @@ et les cycles ignorés (marché fermé) ne notifient pas.
   graphique de la valeur du compte, résultats expliqués en français
   (pire chute, frais, temps en marché, comparaison buy & hold) ;
 * **Piloter** — active/modifie le timer quotidien (choix de la stratégie),
-  lance un cycle immédiat en répétition générale ou en vraie passe paper ;
+  lance un cycle immédiat en répétition générale ou en vraie passe paper,
+  retire du cash et recale la référence d'équité après un mouvement de cash
+  fait chez Alpaca (même opération que `./tradingbot rebase`) ;
 * **Réglages** — univers de symboles et webhook Discord/Telegram sans
   éditer `.env` à la main (validation + restauration automatique) ;
 * **Comprendre** — glossaire : paper trading, stop, ATR, drawdown,
   coupe-circuit, momentum.
+
+Le tableau de bord marque les positions du Bouclier (`SHIELD_SYMBOL`) d'un
+badge dédié et rappelle qu'elles ne portent pas de stop ; le diagnostic
+(`check` et page) analyse ce symbole comme les autres, sans lui proposer de
+filet.
 
 Les retraits manuels (page comme CLI) passent par le **même** service
 (`trading_bot/withdrawal.py`) : annulation des stops vérifiée auprès du courtier

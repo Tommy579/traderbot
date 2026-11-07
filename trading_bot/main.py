@@ -55,6 +55,7 @@ from trading_bot.data.loader import (
 )
 from trading_bot.data.news_sentiment import NewsAssessment, NewsSentimentAnalyzer
 from trading_bot.execution.alpaca_client import (
+    AccountSnapshot,
     AlpacaPaperClient,
     BrokerError,
     MarketStatus,
@@ -75,6 +76,7 @@ from trading_bot.risk.engine import (
     Position,
     RiskDecision,
     RiskEngine,
+    RiskError,
     Side,
 )
 from trading_bot.strategies.base import Signal, SignalType, Strategy, StrategyError
@@ -2041,6 +2043,15 @@ def cmd_check(args: argparse.Namespace) -> int:
     else:
         print("  poche de repli  : désactivée")
 
+    if strategy.name == "shield_sword":
+        shield_weight = getattr(
+            getattr(strategy, "params", None), "shield_allocation_pct", 0.0
+        )
+        print(
+            f"  bouclier        : {settings.risk.shield_symbol} "
+            f"({_format_pct(shield_weight)} de l'équité, sans stop)"
+        )
+
     try:
         bars = broker.fetch_bars(
             symbol,
@@ -2437,6 +2448,77 @@ def cmd_withdraw(args: argparse.Namespace) -> int:
         return 2
 
 
+def apply_equity_rebase(
+    settings: Settings,
+    snapshot: AccountSnapshot,
+    *,
+    reason: str,
+    state_store: StateStore,
+    audit: AuditLog,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Ré-ancre le pic d'équité sur la valeur courante et rend un résumé.
+
+    Partagé par la commande ``rebase`` et l'interface web : le raisonnement
+    (pourquoi, avec quelle justification, ce qui est levé) ne doit exister
+    qu'une fois.
+
+    Args:
+        settings: Configuration effective.
+        snapshot: Compte lu chez le courtier.
+        reason: Justification en clair, recopiée dans l'audit.
+        state_store: Persistance de l'état de risque.
+        audit: Journal d'audit.
+        dry_run: Si ``True``, n'écrit rien.
+
+    Returns:
+        ``{"previous_peak", "new_peak", "halt_lifted", "dry_run"}``.
+
+    Raises:
+        RiskError: justification vide ou équité invalide.
+    """
+    state = state_store.load()
+    account = AccountState(
+        equity=snapshot.equity,
+        cash=snapshot.cash,
+        buying_power=snapshot.buying_power,
+        peak_equity=state.peak_equity,
+        day_start_equity=state.day_start_equity,
+        halted=state.halted,
+        halt_scope=HaltScope(state.halt_scope) if state.halt_scope else None,
+        halt_reason=state.halt_reason,
+    )
+    previous_peak, lifted = RiskEngine(settings.risk).rebase_equity_reference(
+        account, reason=reason
+    )
+    payload: dict[str, Any] = {
+        "previous_peak": previous_peak,
+        "new_peak": account.equity,
+        "halt_lifted": lifted,
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        return payload
+
+    state.peak_equity = account.peak_equity
+    state.day_start_equity = account.day_start_equity
+    state.halted = account.halted
+    state.halt_scope = account.halt_scope.value if account.halt_scope else None
+    state.halt_reason = account.halt_reason
+    state_store.save(state)
+    audit.record(
+        "equity_rebase",
+        {
+            "reason": reason,
+            "previous_peak": previous_peak,
+            "new_peak": account.peak_equity,
+            "halt_lifted": lifted,
+            "equity": account.equity,
+        },
+    )
+    return payload
+
+
 def cmd_rebase(args: argparse.Namespace) -> int:
     """Commande ``rebase`` : ré-ancre le pic d'équité après un mouvement de cash.
 
@@ -2459,63 +2541,28 @@ def cmd_rebase(args: argparse.Namespace) -> int:
         logger.error("%s", exc)
         return 2
 
-    state_store = StateStore(settings.state_dir / "state.json")
-    state = state_store.load()
-    audit = AuditLog(settings.state_dir / "audit.jsonl")
-    account = AccountState(
-        equity=snapshot.equity,
-        cash=snapshot.cash,
-        buying_power=snapshot.buying_power,
-        peak_equity=state.peak_equity,
-        day_start_equity=state.day_start_equity,
-        halted=state.halted,
-        halt_scope=HaltScope(state.halt_scope) if state.halt_scope else None,
-        halt_reason=state.halt_reason,
-    )
-    previous_peak, lifted = RiskEngine(settings.risk).rebase_equity_reference(
-        account, reason=reason
-    )
-    if args.dry_run:
-        payload = {
-            "ok": True,
-            "dry_run": True,
-            "previous_peak": previous_peak,
-            "new_peak": snapshot.equity,
-            "halt_lifted": lifted,
-        }
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
-        return 0
+    try:
+        payload = apply_equity_rebase(
+            settings,
+            snapshot,
+            reason=reason,
+            state_store=StateStore(settings.state_dir / "state.json"),
+            audit=AuditLog(settings.state_dir / "audit.jsonl"),
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    except RiskError as exc:
+        logger.error("%s", exc)
+        return 2
 
-    state.peak_equity = account.peak_equity
-    state.day_start_equity = account.day_start_equity
-    state.halted = account.halted
-    state.halt_scope = account.halt_scope.value if account.halt_scope else None
-    state.halt_reason = account.halt_reason
-    state_store.save(state)
-    audit.record(
-        "equity_rebase",
-        {
-            "reason": reason,
-            "previous_peak": previous_peak,
-            "new_peak": account.peak_equity,
-            "halt_lifted": lifted,
-            "equity": account.equity,
-        },
-    )
     logger.info(
         "pic d'équité recalé : %s -> %.2f (%s)",
-        f"{previous_peak:.2f}" if previous_peak is not None else "n/a",
-        account.equity,
+        f"{payload['previous_peak']:.2f}"
+        if payload["previous_peak"] is not None
+        else "n/a",
+        payload["new_peak"],
         reason,
     )
-    payload = {
-        "ok": True,
-        "dry_run": False,
-        "previous_peak": previous_peak,
-        "new_peak": account.equity,
-        "halt_lifted": lifted,
-    }
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    print(json.dumps({"ok": True, **payload}, indent=2, ensure_ascii=False))
     return 0
 
 
