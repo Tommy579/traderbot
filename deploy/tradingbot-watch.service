@@ -1,0 +1,15 @@
+# Unité systemd UTILISATEUR de la vigie horaire du TradingBot.
+# Template : @PROJECT_DIR@ est substitué par le chemin réel du projet.
+
+[Unit]
+Description=TradingBot Alpaca - vigie horaire (stops et alertes news)
+Documentation=file://@PROJECT_DIR@/README.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PROJECT_DIR@
+ExecStart=@PROJECT_DIR@/.venv/bin/python -m trading_bot.main live --watch-only
+Restart=on-failure
+RestartSec=60s
+TimeoutStartSec=180
+Environment=PYTHONUNBUFFERED=1

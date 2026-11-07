@@ -239,6 +239,23 @@ def test_cycle_job_dry_run(settings, web_bars) -> None:
         httpd.shutdown()
 
 
+def test_cycle_job_watch_only(settings, web_bars) -> None:
+    httpd, port = start_server(make_context(settings, web_bars))
+    try:
+        _code, payload = request(
+            port, "/api/cycle",
+            method="POST",
+            body={"strategy": "ema_cross", "watch_only": True},
+        )
+        snapshot = wait_job(port, payload["job"]["id"])
+        assert snapshot["status"] == "done"
+        report = snapshot["result"]
+        assert report["mode"] == "watch_only"
+        assert not report["skipped"]
+    finally:
+        httpd.shutdown()
+
+
 def test_backtest_job_with_fake_provider(settings, web_bars, monkeypatch, bars_factory) -> None:
     import trading_bot.web.app as webapp
 
@@ -749,6 +766,57 @@ def test_static_assets_and_pwa_manifest(settings, web_bars) -> None:
             assert len(resp.read()) > 0
     finally:
         httpd.shutdown()
+
+
+def test_withdraw_endpoints_and_floors(settings, web_bars) -> None:
+    broker = FakeWebBroker(web_bars)
+    broker.get_positions = lambda: {  # type: ignore[method-assign]
+        "AAPL": Position(
+            symbol="AAPL",
+            qty=20.0,
+            avg_entry_price=100.0,
+            current_price=100.0,
+            stop_price=90.0,
+        )
+    }
+    broker.cancel_open_orders = lambda sym: 1  # type: ignore[attr-defined]
+
+    context = make_context(settings, web_bars, broker=broker)
+    context.env_path.parent.mkdir(parents=True, exist_ok=True)
+    context.env_path.write_text("ALPACA_API_KEY=PK_TEST\n", encoding="utf-8")
+    httpd, port = start_server(context)
+    try:
+        # 1. Retrait partiel par pourcentage
+        code, payload = request(
+            port, "/api/withdraw", method="POST",
+            body={"symbol": "AAPL", "pct": 50.0},
+        )
+        assert code == 200 and payload["ok"] is True
+        assert len(payload["orders"]) == 1
+        assert payload["orders"][0]["symbol"] == "AAPL"
+        assert payload["orders"][0]["qty"] == 10.0
+
+        # 2. Retrait global avec sanctuarisation du plancher de cash
+        code, payload = request(
+            port, "/api/withdraw", method="POST",
+            body={"free_cash": 15000.0},
+        )
+        assert code == 200 and payload["ok"] is True
+        env_text = context.env_path.read_text(encoding="utf-8")
+        assert "WITHDRAWABLE_CASH_FLOOR_USD=15000.00" in env_text
+
+        # 3. Modification des planchers via /api/config
+        code, payload = request(
+            port, "/api/config", method="POST",
+            body={"withdrawable_cash_floor_usd": "3000", "equity_hard_floor_usd": "50000"},
+        )
+        assert code == 200 and payload["ok"] is True
+        fresh = Settings(_env_file=str(context.env_path))
+        assert fresh.risk.withdrawable_cash_floor_usd == 3000.0
+        assert fresh.risk.equity_hard_floor_usd == 50000.0
+    finally:
+        httpd.shutdown()
+
 
 
 

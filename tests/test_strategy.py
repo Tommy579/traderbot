@@ -19,6 +19,10 @@ from trading_bot.strategies.relative_momentum import (
     RelativeMomentumParams,
     RelativeMomentumStrategy,
 )
+from trading_bot.strategies.shield_sword import (
+    ShieldSwordParams,
+    ShieldSwordStrategy,
+)
 
 WIDE_RSI = EmaCrossParams(rsi_entry_min=0.0, rsi_entry_max=100.0)
 
@@ -279,3 +283,152 @@ def test_momentum_params_validation() -> None:
         RelativeMomentumParams(fast_mom=120, slow_mom=60)
     assert RelativeMomentumStrategy().benchmark_symbol == "SPY"
     assert RelativeMomentumStrategy().describe()["strategy"] == "relative_momentum"
+
+
+# ---------------------------------------------------------------------------
+# Bouclier + Épée (Shield + Sword / Core-Satellite CPPI)
+# ---------------------------------------------------------------------------
+
+
+def test_shield_sword_params_validation() -> None:
+    with pytest.raises(ValueError, match="fast_mom"):
+        ShieldSwordParams(fast_mom=120, slow_mom=60)
+    with pytest.raises(ValueError, match="100 %"):
+        ShieldSwordParams(shield_allocation_pct=0.90, sword_allocation_pct=0.20)
+
+    params = ShieldSwordParams()
+    assert params.shield_allocation_pct == 0.70
+    assert params.sword_allocation_pct == 0.30
+    assert params.sword_trend_sma == 100
+    assert params.sword_stop_atr_multiplier == 5.0
+    assert params.sword_max_loss_pct == 0.12
+    assert params.risk_free_rate_annual == 0.045
+    assert params.shield_symbol == "SGOV"
+
+    strategy = ShieldSwordStrategy()
+    assert strategy.describe()["strategy"] == "shield_sword"
+    assert strategy.warmup_bars == 201
+
+
+def test_shield_sword_respects_rebalance_window(bars_factory) -> None:
+    n = 260
+    closes = _rising_closes(n, 1.005)
+    bars = bars_factory(closes)
+    bench_bars = bars_factory(_rising_closes(n, 1.002))
+
+    strategy = ShieldSwordStrategy(
+        ShieldSwordParams(sword_rebalance_days=20, sword_trend_sma=100),
+        benchmark=bench_bars,
+    )
+    enriched = strategy.generate_signals(bars, symbol="OFFENSIVE")
+    signals = enriched["signal"]
+
+    # Warm-up bars are HOLD
+    assert (signals.iloc[: strategy.warmup_bars] == SignalType.HOLD).all()
+
+    # The first bar after warmup (warmup_bars) is a rebalance day -> BUY
+    first_rebal_idx = strategy.warmup_bars
+    assert signals.iloc[first_rebal_idx] == SignalType.BUY
+
+    # In between rebalances (days 1 to 19), signals are strictly HOLD
+    assert (signals.iloc[first_rebal_idx + 1 : first_rebal_idx + 20] == SignalType.HOLD).all()
+
+    # At the next rebalance (first_rebal_idx + 20), since it's already held, it emits HOLD (no churn)
+    assert signals.iloc[first_rebal_idx + 20] == SignalType.HOLD
+
+
+def test_shield_sword_shield_symbols_ignored(bars_factory) -> None:
+    n = 250
+    bars = bars_factory(_rising_closes(n, 1.01))
+    bench = bars_factory(_rising_closes(n, 1.002))
+    strategy = ShieldSwordStrategy(benchmark=bench)
+    for sym in ("BRK.B", "WMT", "KO", "SGOV"):
+        enriched = strategy.generate_signals(bars, symbol=sym)
+        assert (enriched["signal"] == SignalType.HOLD).all()
+
+
+def test_shield_sword_top_n_selection(bars_factory) -> None:
+    n = 250
+    bench = bars_factory(_rising_closes(n, 1.002))
+
+    # 4 offensive stocks with different growth rates
+    bars_fast1 = bars_factory(_rising_closes(n, 1.012))
+    bars_fast2 = bars_factory(_rising_closes(n, 1.010))
+    bars_mid = bars_factory(_rising_closes(n, 1.004))
+    bars_slow = bars_factory(_rising_closes(n, 1.001))
+
+    universe = {
+        "FAST1": bars_fast1,
+        "FAST2": bars_fast2,
+        "MID": bars_mid,
+        "SLOW": bars_slow,
+    }
+
+    strategy = ShieldSwordStrategy(
+        ShieldSwordParams(sword_top_n=2, sword_rebalance_days=20, sword_trend_sma=100),
+        benchmark=bench,
+    )
+    strategy.set_universe(universe)
+
+    rebal_idx = strategy.warmup_bars
+    sig_fast1 = strategy.generate_signals(bars_fast1, symbol="FAST1")["signal"].iloc[rebal_idx]
+    sig_fast2 = strategy.generate_signals(bars_fast2, symbol="FAST2")["signal"].iloc[rebal_idx]
+    sig_mid = strategy.generate_signals(bars_mid, symbol="MID")["signal"].iloc[rebal_idx]
+    sig_slow = strategy.generate_signals(bars_slow, symbol="SLOW")["signal"].iloc[rebal_idx]
+
+    # Top 2 (FAST1 and FAST2) are bought
+    assert sig_fast1 == SignalType.BUY
+    assert sig_fast2 == SignalType.BUY
+    # MID and SLOW were not in Top 2
+    assert sig_mid != SignalType.BUY
+    assert sig_slow != SignalType.BUY
+
+
+def test_shield_sword_bear_market_100pct_shield(bars_factory) -> None:
+    n = 250
+    # SPY falling below SMA 200
+    bench_closes = list(np.linspace(120.0, 100.0, 250))
+    bench = bars_factory(bench_closes)
+
+    bars_fast = bars_factory(_rising_closes(n, 1.010))
+    universe = {"FAST": bars_fast}
+
+    strategy = ShieldSwordStrategy(benchmark=bench)
+    strategy.set_universe(universe)
+
+    rebal_idx = strategy.warmup_bars
+    sig = strategy.generate_signals(bars_fast, symbol="FAST")["signal"].iloc[rebal_idx]
+    # Because SPY < SMA(200), no offensive buy
+    assert sig == SignalType.HOLD
+
+
+def test_shield_immunity_from_stops_and_take_profit() -> None:
+    from datetime import date, datetime
+
+    from trading_bot.risk.engine import AccountState, Position, RiskConfig, RiskEngine
+
+    engine = RiskEngine(RiskConfig())
+    now = datetime(2026, 1, 5, 15, 0, tzinfo=UTC)
+    session = date(2026, 1, 5)
+    account = AccountState(equity=100_000.0, cash=100_000.0, buying_power=100_000.0)
+
+    # Entry evaluation for SGOV as shield asset: no stop price required
+    decision = engine.evaluate_entry(
+        symbol="SGOV",
+        price=100.0,
+        atr=0.10,
+        account=account,
+        now=now,
+        session_date=session,
+        is_shield=True,
+        target_weight=0.70,
+    )
+    assert decision.approved
+    assert decision.intent is not None
+    assert decision.intent.stop_price is None
+
+    # Open position in SGOV: trailing stop and take profit must be None
+    pos_sgov = Position(symbol="SGOV", qty=700.0, avg_entry_price=100.0, current_price=125.0)
+    assert engine.update_trailing_stop(pos_sgov, price=125.0, atr=0.10) is None
+    assert engine.evaluate_partial_take_profit(pos_sgov, price=125.0, now=now) is None
+

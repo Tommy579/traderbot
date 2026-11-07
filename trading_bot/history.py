@@ -17,17 +17,19 @@ import json
 import os
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, TextIO
+
+from trading_bot.clock import get_online_now
 
 _MAX_ENTRIES: Final[int] = 400
 """Enregistrements conservés : environ un an et demi de séances."""
 
 
 def _utc_now() -> datetime:
-    """Horloge par défaut : maintenant en UTC, timezone-aware."""
-    return datetime.now(UTC)
+    """Horloge par défaut : maintenant en UTC, aligné sur l'heure en ligne."""
+    return get_online_now()
 
 
 class HistoryStore:
@@ -50,8 +52,9 @@ class HistoryStore:
     def record(self, report: Mapping[str, Any], *, source: str) -> dict[str, Any]:
         """Enregistre un rapport de cycle et rend l'entrée écrite.
 
-        Si le dernier enregistrement porte déjà la même ``session_date``, il
-        est remplacé : un seul enregistrement par séance, le dernier fait foi.
+        Pour une vigie horaire (``watch_only``), une entrée est conservée par
+        créneau horaire. Pour un cycle complet (``full``), une seule entrée est
+        conservée par séance (le dernier passage remplace le précédent).
 
         Args:
             report: Rapport de cycle (``CycleReport.to_dict()``).
@@ -68,10 +71,39 @@ class HistoryStore:
         with self._locked() as handle:
             entries = self._parse(handle.read())
             session = entry.get("session_date")
-            if entries and session is not None and entries[-1].get("session_date") == session:
-                entries[-1] = entry
-            else:
+            mode = entry.get("mode", "full")
+            ts = entry.get("timestamp") or entry.get("recorded_at", "")
+            hour = str(ts)[11:13] if len(str(ts)) >= 13 and "T" in str(ts) else ""
+
+            replaced = False
+            if entries and session is not None:
+                last = entries[-1]
+                last_session = last.get("session_date")
+                last_mode = last.get("mode", "full")
+                last_ts = last.get("timestamp") or last.get("recorded_at", "")
+                last_hour = str(last_ts)[11:13] if len(str(last_ts)) >= 13 and "T" in str(last_ts) else ""
+
+                same_full = mode == "full" and last_session == session and last_mode == "full"
+                same_watch = (
+                    mode == "watch_only"
+                    and last_session == session
+                    and last_mode == "watch_only"
+                    and last_hour == hour
+                )
+                if same_full or same_watch:
+                    entries[-1] = entry
+                    replaced = True
+                elif mode == "full":
+                    # Si une entrée 'full' existait plus tôt pour la séance, on la remplace
+                    for idx in range(len(entries) - 1, -1, -1):
+                        if entries[idx].get("session_date") == session and entries[idx].get("mode", "full") == "full":
+                            entries[idx] = entry
+                            replaced = True
+                            break
+
+            if not replaced:
                 entries.append(entry)
+
             if len(entries) > self._limit:
                 del entries[: len(entries) - self._limit]
             self._rewrite(handle, entries)

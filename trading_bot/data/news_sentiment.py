@@ -35,6 +35,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
+from trading_bot.clock import get_online_now
+
 __all__ = [
     "NEUTRAL_ASSESSMENT",
     "NewsArticle",
@@ -148,7 +150,7 @@ class NewsAssessment:
         elif isinstance(updated_at, datetime):
             stamp = updated_at
         else:
-            stamp = datetime.now(UTC)
+            stamp = get_online_now()
         if stamp.tzinfo is None:
             stamp = stamp.replace(tzinfo=UTC)
         return cls(
@@ -373,7 +375,7 @@ class NewsSentimentAnalyzer:
         """
         from alpaca.data.requests import NewsRequest
 
-        moment = now or datetime.now(UTC)
+        moment = now or get_online_now()
         try:
             response = self._client().get_news(
                 NewsRequest(
@@ -587,7 +589,7 @@ class NewsSentimentAnalyzer:
             Un verdict par symbole. Un symbole dont les articles ont déjà tous
             été notés conserve son verdict précédent, sans appel au modèle.
         """
-        moment = now or datetime.now(UTC)
+        moment = now or get_online_now()
         known = self._load_registry()
         known_set = set(known)
         previous = self._load_assessments()

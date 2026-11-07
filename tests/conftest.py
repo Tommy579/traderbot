@@ -71,6 +71,7 @@ def settings(tmp_path: Path) -> Settings:
         alpaca_api_key="PK_TEST",
         alpaca_secret_key="SECRET_TEST",
         symbols=["AAPL"],
+        safe_haven_enabled=False,
         state_dir=tmp_path / "state",
         log_level="DEBUG",
     )
@@ -80,3 +81,14 @@ def settings(tmp_path: Path) -> Settings:
 def fixed_now() -> datetime:
     """Instant de test timezone-aware (séance ouverte, 10:00 ET)."""
     return datetime(2024, 1, 10, 15, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empêche tout test d'écrire dans le vrai ``state/`` du projet.
+
+    Les ``Settings(...)`` construits sans ``state_dir`` explicite retombent
+    sur ``PROJECT_ROOT / "state"`` : sans ce garde-fou, un test peut écraser
+    les stops réels du bot (constaté : ``state.json`` remplacé par AAPL 90/100).
+    """
+    monkeypatch.setenv("STATE_DIR", str(tmp_path / "state"))

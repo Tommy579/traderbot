@@ -36,6 +36,7 @@ from alpaca.trading.requests import (
     StopOrderRequest,
 )
 
+from trading_bot.clock import get_online_now, sync_online_clock
 from trading_bot.config import Settings, is_paper_endpoint
 from trading_bot.data.loader import BarFrame, DataError, normalize_ohlcv
 from trading_bot.risk.engine import OrderIntent, OrderType, Position, Side
@@ -358,7 +359,7 @@ class AlpacaPaperClient:
         now: datetime | None = None,
     ) -> BarFrame:
         """Récupère les barres Alpaca et les normalise au schéma du projet."""
-        end = now or datetime.now().astimezone()
+        end = now or get_online_now().astimezone()
         start = end - timedelta(days=lookback_days)
         request = StockBarsRequest(
             symbol_or_symbols=symbol,
@@ -384,6 +385,9 @@ class AlpacaPaperClient:
         """Indique si le marché actions est ouvert (horloge Alpaca)."""
         try:
             clock = self._trading.get_clock()
+            ts = getattr(clock, "timestamp", None)
+            if isinstance(ts, datetime):
+                sync_online_clock(ts)
             return bool(clock.is_open)
         except Exception as exc:
             raise BrokerError("lecture de l'horloge de marché impossible") from exc
@@ -407,15 +411,17 @@ class AlpacaPaperClient:
             clock = self._trading.get_clock()
         except Exception as exc:
             raise BrokerError("lecture de l'horloge de marché impossible") from exc
-        if bool(clock.is_open):
-            return MarketStatus(is_open=True)
 
         market_tz = ZoneInfo(self._settings.market_timezone)
         moment = getattr(clock, "timestamp", None)
         if isinstance(moment, datetime):
+            sync_online_clock(moment)
             moment = moment.astimezone(market_tz)
         else:
-            moment = datetime.now(market_tz)
+            moment = get_online_now().astimezone(market_tz)
+
+        if bool(clock.is_open):
+            return MarketStatus(is_open=True)
         next_open = getattr(clock, "next_open", None)
         return MarketStatus(
             is_open=False,
@@ -461,7 +467,7 @@ class AlpacaPaperClient:
         """
         if not is_paper_endpoint(self._settings.alpaca_trading_url):
             raise PaperTradingViolation("endpoint non paper : ordre refusé")
-        instant = now or datetime.now().astimezone()
+        instant = now or get_online_now().astimezone()
         if not intent.is_executable(instant):
             raise BrokerError(
                 f"jeton d'approbation expiré ou invalide pour {intent.symbol}"

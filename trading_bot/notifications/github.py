@@ -21,8 +21,10 @@ import logging
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Final, Protocol
+
+from trading_bot.clock import get_online_now
 
 LOGGER = logging.getLogger(__name__)
 
@@ -69,9 +71,10 @@ def _urllib_transport(
         return int(exc.code), exc.read()
 
 
+
 def _utc_now() -> datetime:
-    """Horloge par défaut : maintenant en UTC, timezone-aware."""
-    return datetime.now(UTC)
+    """Horloge par défaut : maintenant en UTC, aligné sur l'heure en ligne."""
+    return get_online_now()
 
 
 class GitHubStatsPublisher:
@@ -227,24 +230,32 @@ class GitHubStatsPublisher:
         event: str,
         payload: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
-        """Insère ou remplace l'entrée en respectant la règle « une par séance »."""
+        """Insère ou remplace l'entrée en respectant la règle par séance / créneau."""
         entry = {
             "received_at": self._clock().isoformat(),
             "event": event,
             "report": dict(payload),
         }
         session = payload.get("session_date")
+        mode = payload.get("mode", "full")
+        ts = payload.get("timestamp") or entry.get("received_at", "")
+        hour = str(ts)[11:13] if len(str(ts)) >= 13 and "T" in str(ts) else ""
+
         if session is not None:
-            # Recherche si la séance existe déjà n'importe où dans la liste
             replaced = False
             new_entries = []
             for existing in entries:
-                existing_session = (
-                    existing.get("report", {}).get("session_date")
-                    if isinstance(existing, dict)
-                    else None
-                )
-                if existing_session == session:
+                rep = existing.get("report", {}) if isinstance(existing, dict) else {}
+                ex_session = rep.get("session_date")
+                ex_mode = rep.get("mode", "full")
+                ex_ts = rep.get("timestamp") or existing.get("received_at", "")
+                ex_hour = str(ex_ts)[11:13] if len(str(ex_ts)) >= 13 and "T" in str(ex_ts) else ""
+
+                same_full = mode == "full" and ex_mode == "full"
+                same_watch = mode == "watch_only" and ex_mode == "watch_only" and ex_hour == hour
+                match = ex_session == session and (same_full or same_watch)
+
+                if match:
                     new_entries.append(entry)
                     replaced = True
                 else:

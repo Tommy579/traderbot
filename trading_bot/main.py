@@ -35,11 +35,14 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict
 
 from trading_bot.backtest.runner import BacktestResult, BacktestRunner
+from trading_bot.clock import clock_offset_seconds, get_online_now
 from trading_bot.config import (
+    PROJECT_ROOT,
     BacktestConfig,
     ConfigurationError,
     Settings,
     configure_logging,
+    update_env_file,
 )
 from trading_bot.data.loader import (
     BarFrame,
@@ -49,7 +52,6 @@ from trading_bot.data.loader import (
     YFinanceProvider,
     drop_incomplete_bar,
     momentum_zscores,
-    trend_regime,
 )
 from trading_bot.data.news_sentiment import NewsAssessment, NewsSentimentAnalyzer
 from trading_bot.execution.alpaca_client import (
@@ -85,6 +87,10 @@ from trading_bot.strategies.relative_momentum import (
     RelativeMomentumParams,
     RelativeMomentumStrategy,
 )
+from trading_bot.strategies.shield_sword import (
+    ShieldSwordParams,
+    ShieldSwordStrategy,
+)
 
 LOGGER = logging.getLogger("trading_bot.main")
 _ORDER_FILL_TIMEOUT_SECONDS: Final[float] = 30.0
@@ -92,6 +98,7 @@ STRATEGY_NAMES: Final[tuple[str, ...]] = (
     "ema_cross",
     "donchian_breakout",
     "relative_momentum",
+    "shield_sword",
 )
 _JOURS_FR: Final[tuple[str, ...]] = (
     "lundi",
@@ -161,6 +168,16 @@ def build_strategy(name: str, args: argparse.Namespace | None = None) -> Strateg
             RelativeMomentumParams(
                 fast_mom=getattr(namespace, "mom_fast", 60),
                 slow_mom=getattr(namespace, "mom_slow", 120),
+            )
+        )
+    if name == "shield_sword":
+        return ShieldSwordStrategy(
+            ShieldSwordParams(
+                shield_allocation_pct=getattr(namespace, "shield_pct", 0.70),
+                sword_allocation_pct=getattr(namespace, "sword_pct", 0.30),
+                sword_top_n=getattr(namespace, "sword_top_n", 3),
+                sword_rebalance_days=getattr(namespace, "sword_rebalance_days", 20),
+                sword_trend_sma=getattr(namespace, "sword_trend_sma", 100),
             )
         )
     raise ConfigurationError(
@@ -378,8 +395,8 @@ class BarSource(Protocol):
 
 
 def _utc_now() -> datetime:
-    """Horloge par défaut : maintenant en UTC, timezone-aware."""
-    return datetime.now(UTC)
+    """Horloge par défaut : maintenant en UTC, aligné sur l'heure en ligne."""
+    return get_online_now()
 
 
 def _symbol_message(symbol: str, exc: Exception) -> str:
@@ -428,7 +445,7 @@ class PersistedState(BaseModel):
     halted: bool = False
     halt_scope: str | None = None
     halt_reason: str | None = None
-    stops: dict[str, dict[str, float]] = {}
+    stops: dict[str, dict[str, Any]] = {}
 
 
 class StateStore:
@@ -502,6 +519,7 @@ class CycleReport:
 
     timestamp: datetime
     session_date: date
+    mode: str = "full"
     skipped: bool = False
     skip_reason: str | None = None
     equity: float = 0.0
@@ -520,6 +538,7 @@ class CycleReport:
         return {
             "timestamp": self.timestamp.isoformat(),
             "session_date": self.session_date.isoformat(),
+            "mode": self.mode,
             "skipped": self.skipped,
             "skip_reason": self.skip_reason,
             "equity": self.equity,
@@ -662,11 +681,191 @@ class TradingBot:
         self._history.record(entry, source=source or _detect_history_source())
         return report
 
+    def run_watch_only(self, *, source: str | None = None) -> CycleReport:
+        """Exécute une passe de vigie horaire (stops et news) et l'inscrit dans l'historique.
+
+        Args:
+            source: Origine consignée (par défaut 'watch_only').
+
+        Returns:
+            Le rapport de vigie.
+        """
+        report = self._execute_watch_only()
+        entry = report.to_dict()
+        entry["dry_run"] = self._settings.dry_run
+        self._history.record(entry, source=source or "watch_only")
+        return report
+
+    def _execute_watch_only(self) -> CycleReport:
+        """Mode vigie horaire : surveillance des stops 1Day et panic exits news sans nouveaux achats."""
+        now = self._clock()
+        if now.tzinfo is None:
+            raise ConfigurationError("l'horloge du bot doit être timezone-aware")
+        offset = clock_offset_seconds()
+        if abs(offset) >= 2.0:
+            self._logger.info(
+                "heure en ligne utilisée : décalage de %+.1f s par rapport au PC",
+                offset,
+            )
+        local_now = now.astimezone(ZoneInfo(self._settings.market_timezone))
+        session_date = local_now.date()
+        report = CycleReport(timestamp=now, session_date=session_date, mode="watch_only")
+
+        try:
+            status = self._broker.market_status()
+        except BrokerError as exc:
+            report.errors.append(str(exc))
+            status = MarketStatus(is_open=False)
+        if not status.is_open:
+            report.skipped = True
+            report.skip_reason = market_closed_message(
+                status, self._settings.market_timezone
+            )
+            return report
+
+        snapshot = self._broker.get_account()
+        positions = self._broker.get_positions()
+        account = self._build_account(
+            snapshot.equity, snapshot.cash, snapshot.buying_power, positions
+        )
+        self._risk.start_session(account, session_date=session_date)
+        halt = self._risk.update_risk_state(account, session_date=session_date)
+        if halt is not None:
+            report.halts.append(halt)
+            self._audit_halt(halt)
+            self._logger.critical("CIRCUIT BREAKER (%s): %s", halt.scope.value, halt.reason)
+            self._flatten(account, {}, now, report)
+            self._persist(account)
+            report.equity = account.equity
+            report.cash = account.cash
+            report.positions_count = len(account.positions)
+            report.positions = [
+                {
+                    "symbol": p.symbol,
+                    "qty": p.qty,
+                    "avg_entry_price": p.avg_entry_price,
+                    "current_price": p.current_price,
+                    "stop_price": p.stop_price,
+                    "market_value": p.market_value,
+                    "unrealized_pnl": p.unrealized_pnl,
+                }
+                for p in account.positions.values()
+            ]
+            report.unrealized_pnl = sum(p.unrealized_pnl for p in account.positions.values())
+            self._notify(report)
+            return report
+
+        if not account.positions:
+            self._logger.info("vigie horaire : aucune position en portefeuille à surveiller")
+            self._persist(account)
+            report.equity = account.equity
+            report.cash = account.cash
+            report.positions_count = 0
+            return report
+
+        open_symbols = sorted(account.positions.keys())
+        try:
+            live_prices = self._broker.get_latest_prices(open_symbols)
+        except BrokerError as exc:
+            self._logger.warning("vigie: lecture des prix en direct impossible: %s", exc)
+            report.errors.append(f"prix en direct: {exc}")
+            live_prices = {}
+
+        marks: dict[str, float] = {}
+        for sym, pos in account.positions.items():
+            marks[sym] = live_prices.get(sym, pos.current_price)
+
+        self._recompute_equity(account, marks)
+
+        assessments = self._news_assessments(open_symbols, now=now, report=report)
+
+        for symbol in open_symbols:
+            position = account.positions.get(symbol)
+            if position is None:
+                continue
+            price = marks.get(symbol, position.current_price)
+
+            # 1. Sortie d'urgence sur alerte news critique
+            decision = self._risk.evaluate_news_panic_exit(
+                position,
+                news=assessments.get(symbol),
+                price=price,
+                now=now,
+            )
+            if decision is not None:
+                self._logger.warning("vigie horaire: sortie d'urgence %s: %s", symbol, decision.reason)
+
+            # 2. Sortie sur stop-loss journalier
+            if decision is None:
+                decision = self._risk.evaluate_stop_exit(position, price=price, now=now)
+
+            # 3. Take-profit partiel (+20% PnL)
+            if decision is None:
+                decision = self._risk.evaluate_partial_take_profit(position, price=price, now=now)
+                if decision is not None:
+                    self._logger.info("vigie horaire: take-profit partiel %s: %s", symbol, decision.reason)
+
+            # 4. Écrémage surpondération (>25% équité)
+            if decision is None:
+                decision = self._risk.evaluate_overweight_trim(position, price=price, account=account, now=now)
+                if decision is not None:
+                    self._logger.info("vigie horaire: écrémage surpondération %s: %s", symbol, decision.reason)
+
+            if decision is None:
+                continue
+
+            report.decisions.append(decision)
+            self._audit_decision(decision)
+            if self._execute_decision(decision, now, account, report):
+                self._logger.info("vigie horaire: position %s coupée ou allégée (%s)", symbol, decision.reason)
+
+        # 5. Reconstitution du plancher de cash via Safe Haven si nécessaire
+        reconstitution_decisions = self._risk.evaluate_safe_haven_cash_floor_reconstitution(
+            account, marks, now=now
+        )
+        for r_dec in reconstitution_decisions:
+            report.decisions.append(r_dec)
+            self._audit_decision(r_dec)
+            if self._execute_decision(r_dec, now, account, report):
+                self._logger.info(
+                    "vigie horaire: reconstitution plancher cash via safe haven %s: %s",
+                    r_dec.intent.symbol if r_dec.intent else "",
+                    r_dec.reason,
+                )
+
+        self._recompute_equity(account, marks)
+        self._persist(account)
+        report.equity = account.equity
+        report.cash = account.cash
+        report.positions_count = len(account.positions)
+        report.positions = [
+            {
+                "symbol": p.symbol,
+                "qty": p.qty,
+                "avg_entry_price": p.avg_entry_price,
+                "current_price": p.current_price,
+                "stop_price": p.stop_price,
+                "market_value": p.market_value,
+                "unrealized_pnl": p.unrealized_pnl,
+            }
+            for p in account.positions.values()
+        ]
+        report.unrealized_pnl = sum(p.unrealized_pnl for p in account.positions.values())
+        if report.orders:
+            self._notify(report)
+        return report
+
     def _execute_cycle(self) -> CycleReport:
         """Exécute un cycle complet de décision et d'exécution."""
         now = self._clock()
         if now.tzinfo is None:
             raise ConfigurationError("l'horloge du bot doit être timezone-aware")
+        offset = clock_offset_seconds()
+        if abs(offset) >= 2.0:
+            self._logger.info(
+                "heure en ligne utilisée : décalage de %+.1f s par rapport au PC",
+                offset,
+            )
         local_now = now.astimezone(ZoneInfo(self._settings.market_timezone))
         session_date = local_now.date()
         report = CycleReport(timestamp=now, session_date=session_date)
@@ -697,38 +896,65 @@ class TradingBot:
 
         benchmark_symbol = self._settings.benchmark_symbol
         bull_market = False
+        bear_market = False
         try:
             benchmark_bars = self._fetch_complete_bars(benchmark_symbol, now)
             _inject_benchmark(self._strategy, benchmark_bars, benchmark_symbol)
-            regime = trend_regime(benchmark_bars)
-            if len(regime):
-                bull_market = bool(regime.iloc[-1])
+            close = benchmark_bars["close"].astype(float)
+            sma_period = self._risk.config.regime_sma_period
+            if len(close) >= sma_period:
+                sma = float(close.rolling(sma_period).mean().iloc[-1])
+                last_close = float(close.iloc[-1])
+                bull_market = last_close > sma
+                bear_market = last_close <= sma
+            else:
+                bull_market = False
+                bear_market = False
         except (DataError, BrokerError, StrategyError) as exc:
             report.errors.append(f"{benchmark_symbol}: {exc}")
             self._logger.warning(
                 "benchmark %s indisponible, régime prudent: %s", benchmark_symbol, exc
             )
-        # Régime prudent par défaut ; haussier uniquement si le benchmark
-        # clôture au-dessus de sa SMA longue.
-        self._risk.set_market_regime(bull_market=bull_market)
+        self._risk.set_market_regime(bull_market=bull_market, bear_market=bear_market)
         if bull_market:
             self._logger.info(
-                "régime haussier: %s > SMA200, plafonds desserrés",
+                "régime haussier: %s > SMA%d, plafonds desserrés",
                 benchmark_symbol,
+                self._risk.config.regime_sma_period,
+            )
+        elif bear_market:
+            self._logger.warning(
+                "régime baissier: %s <= SMA%d ([BEAR_REGIME_VETO] actif sur offensifs)",
+                benchmark_symbol,
+                self._risk.config.regime_sma_period,
             )
 
-        universe = sorted(set(self._settings.symbols) | set(account.positions))
+        safe_havens = (
+            set(self._settings.safe_haven_symbols)
+            if self._settings.safe_haven_enabled
+            else set()
+        )
+        universe = sorted(set(self._settings.symbols) | safe_havens | set(account.positions))
         bars_by_symbol: dict[str, BarFrame] = {}
-        signals: dict[str, Signal] = {}
         for symbol in universe:
             try:
-                bars = self._fetch_complete_bars(symbol, now)
+                bars_by_symbol[symbol] = self._fetch_complete_bars(symbol, now)
+            except (DataError, BrokerError) as exc:
+                report.errors.append(_symbol_message(symbol, exc))
+                self._logger.warning("téléchargement %s ignoré: %s", symbol, exc)
+                continue
+
+        if hasattr(self._strategy, "set_universe"):
+            self._strategy.set_universe(bars_by_symbol)
+
+        signals: dict[str, Signal] = {}
+        for symbol, bars in bars_by_symbol.items():
+            try:
                 signal = self._strategy.latest_signal(bars, symbol=symbol)
-            except (DataError, BrokerError, StrategyError) as exc:
+            except StrategyError as exc:
                 report.errors.append(_symbol_message(symbol, exc))
                 self._logger.warning("analyse %s ignorée: %s", symbol, exc)
                 continue
-            bars_by_symbol[symbol] = bars
             signals[symbol] = signal
             report.signals[symbol] = signal.action.value
 
@@ -777,7 +1003,7 @@ class TradingBot:
                 self._logger.warning("sortie d'urgence %s: %s", symbol, decision.reason)
             if decision is None:
                 decision = self._risk.evaluate_stop_exit(position, price=price, now=now)
-            if decision is None:
+            if decision is None and symbol not in safe_havens:
                 exit_signal = signals.get(symbol)
                 if exit_signal is not None and exit_signal.action is SignalType.SELL:
                     decision = self._risk.evaluate_exit(
@@ -786,13 +1012,41 @@ class TradingBot:
                         now=now,
                         reason="strategy_exit",
                     )
+            # Take-profit partiel (+20% PnL)
+            if decision is None:
+                decision = self._risk.evaluate_partial_take_profit(position, price=price, now=now)
+                if decision is not None:
+                    self._logger.info("take-profit partiel %s: %s", symbol, decision.reason)
+            # Écrémage surpondération (>25% équité)
+            if decision is None:
+                decision = self._risk.evaluate_overweight_trim(position, price=price, account=account, now=now)
+                if decision is not None:
+                    self._logger.info("écrémage surpondération %s: %s", symbol, decision.reason)
+
             if decision is None:
                 continue
             report.decisions.append(decision)
             self._audit_decision(decision)
             if self._execute_decision(decision, now, account, report):
-                exited_symbols.add(symbol)
-                self._logger.info("position %s liquidée (%s)", symbol, decision.reason)
+                if symbol not in account.positions:
+                    exited_symbols.add(symbol)
+                    self._logger.info("position %s liquidée (%s)", symbol, decision.reason)
+                else:
+                    self._logger.info("position %s allégée (%s)", symbol, decision.reason)
+
+        # Reconstitution du plancher de cash via Safe Haven si nécessaire
+        reconstitution_decisions = self._risk.evaluate_safe_haven_cash_floor_reconstitution(
+            account, marks, now=now
+        )
+        for r_dec in reconstitution_decisions:
+            report.decisions.append(r_dec)
+            self._audit_decision(r_dec)
+            if self._execute_decision(r_dec, now, account, report):
+                self._logger.info(
+                    "reconstitution plancher cash via safe haven %s: %s",
+                    r_dec.intent.symbol if r_dec.intent else "",
+                    r_dec.reason,
+                )
 
         for symbol, position in sorted(account.positions.items()):
             trailing_signal = signals.get(symbol)
@@ -832,6 +1086,44 @@ class TradingBot:
             entry_signal = signals[symbol]
             atr = entry_signal.indicators["atr"]
             price = marks.get(symbol, entry_signal.price)
+
+            # Auto-Unwind de repli si cash insuffisant pour l'ordre offensif validé
+            if self._settings.safe_haven_enabled and not self._risk.bear_market:
+                news_item = assessments.get(symbol)
+                if not (news_item and self._risk.news_vetoes_entry(news_item)):
+                    stop_distance = atr * self._risk.config.atr_stop_multiple
+                    risk_budget = account.equity * self._risk.config.risk_per_trade_pct
+                    qty_by_risk = risk_budget / stop_distance
+                    gross_rem = max(
+                        0.0,
+                        account.equity * self._risk.effective_gross_cap_pct() - account.gross_exposure,
+                    )
+                    notional_cap = min(
+                        account.equity * self._risk.effective_position_cap_pct(),
+                        gross_rem,
+                    )
+                    target_notional = min(qty_by_risk * price, notional_cap)
+                    cash_buffer = account.equity * self._risk.config.cash_buffer_pct
+                    usable_cash = max(0.0, min(account.cash - cash_buffer, account.buying_power))
+                    if target_notional > usable_cash:
+                        needed = target_notional - usable_cash
+                        unwind_decisions = self._risk.evaluate_safe_haven_unwind(
+                            account, needed, marks, now=now
+                        )
+                        for u_dec in unwind_decisions:
+                            report.decisions.append(u_dec)
+                            self._audit_decision(u_dec)
+                            if self._execute_decision(u_dec, now, account, report):
+                                self._logger.info(
+                                    "auto-unwind safe haven %s: %s",
+                                    u_dec.intent.symbol if u_dec.intent else "",
+                                    u_dec.reason,
+                                )
+
+            is_ss = self._strategy.name == "shield_sword"
+            is_shield_asset = is_ss and (
+                symbol == "SGOV" or symbol in self._settings.safe_haven_symbols
+            )
             decision = self._risk.evaluate_entry(
                 symbol=symbol,
                 price=price,
@@ -840,6 +1132,10 @@ class TradingBot:
                 now=now,
                 session_date=session_date,
                 news=assessments.get(symbol),
+                target_weight=0.10 if (is_ss and not is_shield_asset) else (0.70 if is_shield_asset else None),
+                atr_stop_multiple=5.0 if (is_ss and not is_shield_asset) else None,
+                max_loss_pct=0.12 if (is_ss and not is_shield_asset) else None,
+                is_shield=is_shield_asset,
             )
             report.decisions.append(decision)
             self._audit_decision(decision)
@@ -852,6 +1148,30 @@ class TradingBot:
                 )
                 continue
             self._execute_decision(decision, now, account, report)
+
+        # Cash Sweep en fin de cycle : réinvestissement du cash excédentaire vers les safe havens
+        if self._settings.safe_haven_enabled and not account.halted:
+            atrs = {
+                sym: sig.indicators.get("atr", 0.0)
+                for sym, sig in signals.items()
+                if sig is not None and "atr" in sig.indicators
+            }
+            sweep_decisions = self._risk.evaluate_cash_sweep(
+                account,
+                marks,
+                now=now,
+                news=assessments,
+                atrs=atrs,
+            )
+            for s_dec in sweep_decisions:
+                report.decisions.append(s_dec)
+                self._audit_decision(s_dec)
+                if self._execute_decision(s_dec, now, account, report):
+                    self._logger.info(
+                        "cash sweep %s: %s",
+                        s_dec.intent.symbol if s_dec.intent else "",
+                        s_dec.reason,
+                    )
 
         self._recompute_equity(account, marks)
         self._persist(account)
@@ -1130,6 +1450,16 @@ class TradingBot:
                     else opened.current_price
                 )
                 self._sync_broker_stop(opened, price=fill_price, now=now, report=report)
+        elif intent.side is Side.SELL:
+            # Si la position existe encore (vente partielle), repositionner le stop
+            remaining = account.positions.get(intent.symbol)
+            if remaining is not None and remaining.stop_price is not None:
+                fill_price = (
+                    filled.avg_fill_price
+                    if filled.avg_fill_price is not None
+                    else remaining.current_price
+                )
+                self._sync_broker_stop(remaining, price=fill_price, now=now, report=report)
         return True
 
     def _cancel_open_orders(self, symbol: str, report: CycleReport) -> bool:
@@ -1232,18 +1562,31 @@ class TradingBot:
             )
         if intent.side is Side.BUY:
             account.cash -= qty * price
-            account.positions[intent.symbol] = Position(
-                symbol=intent.symbol,
-                qty=qty,
-                avg_entry_price=price,
-                current_price=price,
-                stop_price=intent.stop_price,
-                initial_stop_price=intent.stop_price,
-                highest_price=price,
-                opened_at=filled.submitted_at,
-            )
+            existing = account.positions.get(intent.symbol)
+            if existing is not None:
+                new_qty = existing.qty + qty
+                new_avg = (
+                    (existing.avg_entry_price * existing.qty) + (price * qty)
+                ) / new_qty
+                existing.qty = new_qty
+                existing.avg_entry_price = new_avg
+                existing.current_price = price
+                existing.highest_price = max(existing.highest_price, price)
+                if intent.stop_price is not None:
+                    existing.stop_price = intent.stop_price
+            else:
+                account.positions[intent.symbol] = Position(
+                    symbol=intent.symbol,
+                    qty=qty,
+                    avg_entry_price=price,
+                    current_price=price,
+                    stop_price=intent.stop_price,
+                    initial_stop_price=intent.stop_price,
+                    highest_price=price,
+                    opened_at=filled.submitted_at,
+                )
             self._logger.info(
-                "entrée %s %.4f @ %.2f (stop %.2f)",
+                "achat %s %.4f @ %.2f (stop %.2f)",
                 intent.symbol,
                 qty,
                 price,
@@ -1251,7 +1594,19 @@ class TradingBot:
             )
         else:
             account.cash += qty * price
-            account.positions.pop(intent.symbol, None)
+            existing = account.positions.get(intent.symbol)
+            if existing is not None:
+                if qty >= existing.qty - 1e-6:
+                    account.positions.pop(intent.symbol, None)
+                else:
+                    existing.qty -= qty
+                    if intent.reason == "partial_take_profit":
+                        existing.partial_tp_taken = True
+                        existing.stop_price = max(
+                            existing.stop_price or 0.0, existing.avg_entry_price
+                        )
+            else:
+                account.positions.pop(intent.symbol, None)
         account.buying_power = account.cash
 
     def _flatten(
@@ -1299,7 +1654,7 @@ class TradingBot:
         self._state.halt_reason = account.halt_reason
         self._state.stops = {
             symbol: {
-                key: float(value)
+                key: value
                 for key, value in position.stop_state().items()
                 if value is not None
             }
@@ -1435,6 +1790,10 @@ def cmd_live(args: argparse.Namespace) -> int:
         notifier=_build_notifier(settings),
         news_analyzer=_build_news_analyzer(settings),
     )
+    if getattr(args, "watch_only", False):
+        report = bot.run_watch_only()
+        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+        return 0 if not report.errors else 1
     if args.once:
         report = bot.run_once()
         print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
@@ -1458,13 +1817,14 @@ def cmd_check(args: argparse.Namespace) -> int:
     try:
         broker = AlpacaPaperClient(settings)
         account = broker.get_account()
+        positions = broker.get_positions()
         market_open = broker.is_market_open()
     except (ConfigurationError, BrokerError) as exc:
         logger.error("%s", exc)
         return 2
 
     symbol = settings.symbols[0]
-    benchmark_symbol: str | None = getattr(strategy, "benchmark_symbol", None)
+    benchmark_symbol = settings.benchmark_symbol
     print("")
     print("Diagnostic paper trading Alpaca")
     print(f"  endpoint        : {settings.alpaca_trading_url}")
@@ -1475,9 +1835,76 @@ def cmd_check(args: argparse.Namespace) -> int:
     print(f"  buying power    : {_format_number(account.buying_power)}")
     print(f"  univers         : {', '.join(settings.symbols)}")
     print(f"  stratégie       : {strategy.name}")
-    if benchmark_symbol:
-        print(f"  benchmark       : {benchmark_symbol}")
+    print(f"  benchmark       : {benchmark_symbol}")
     print(f"  timeframe       : {settings.timeframe}")
+
+    benchmark_complete: BarFrame | None = None
+    try:
+        benchmark_raw = broker.fetch_bars(
+            benchmark_symbol,
+            timeframe=settings.timeframe,
+            lookback_days=settings.lookback_days,
+            now=_utc_now(),
+        )
+        benchmark_complete = drop_incomplete_bar(
+            benchmark_raw,
+            settings.timeframe,
+            _utc_now(),
+            market_timezone=settings.market_timezone,
+        )
+        if getattr(strategy, "benchmark_symbol", None) is not None:
+            _inject_benchmark(strategy, benchmark_complete, benchmark_symbol)
+    except (BrokerError, DataError, StrategyError) as exc:
+        logger.warning("benchmark %s indisponible: %s", benchmark_symbol, exc)
+
+    sma_period = settings.risk.regime_sma_period
+    if benchmark_complete is not None and len(benchmark_complete) >= sma_period:
+        b_close = benchmark_complete["close"].astype(float)
+        b_sma = float(b_close.rolling(sma_period).mean().iloc[-1])
+        b_last = float(b_close.iloc[-1])
+        regime_label = "BULL" if b_last > b_sma else "BEAR"
+        extra = "" if regime_label == "BULL" else " [BEAR_REGIME_VETO actif sur offensifs]"
+        print(
+            f"  régime {benchmark_symbol} (SMA {sma_period}) : {regime_label} "
+            f"(cours {_format_number(b_last)} vs SMA {_format_number(b_sma)}){extra}"
+        )
+    elif benchmark_complete is not None:
+        print(
+            f"  régime {benchmark_symbol} (SMA {sma_period}) : INCONNU "
+            f"({len(benchmark_complete)}/{sma_period} barres requises)"
+        )
+    else:
+        print(f"  régime {benchmark_symbol} (SMA {sma_period}) : INDISPONIBLE")
+
+    if settings.safe_haven_enabled:
+        safe_symbols_str = ", ".join(settings.safe_haven_symbols)
+        cash_buf = account.equity * settings.risk.cash_buffer_pct
+        max_sh_notional = account.equity * settings.risk.max_safe_haven_total_pct
+        sh_held = {
+            sym: pos
+            for sym, pos in positions.items()
+            if sym in settings.safe_haven_symbols and pos.qty > 0
+        }
+        sh_total_val = sum(p.market_value for p in sh_held.values())
+        sh_pct = (sh_total_val / account.equity) if account.equity > 0 else 0.0
+        print(
+            f"  poche de repli  : activée (symboles: {safe_symbols_str} | "
+            f"buffer cash min: {_format_pct(settings.risk.cash_buffer_pct)} [{_format_number(cash_buf)}] | "
+            f"plafond: {_format_pct(settings.risk.max_safe_haven_total_pct)} [{_format_number(max_sh_notional)}])"
+        )
+        if sh_held:
+            sh_details = ", ".join(
+                f"{sym}: {p.qty:.2f} parts ({_format_number(p.market_value)})"
+                for sym, p in sh_held.items()
+            )
+            print(
+                f"  repli détenu    : {_format_number(sh_total_val)} "
+                f"({_format_pct(sh_pct)}) [{sh_details}]"
+            )
+        else:
+            print(f"  repli détenu    : {_format_number(0.0)} (0.00%) [aucune position]")
+    else:
+        print("  poche de repli  : désactivée")
 
     try:
         bars = broker.fetch_bars(
@@ -1492,23 +1919,8 @@ def cmd_check(args: argparse.Namespace) -> int:
             _utc_now(),
             market_timezone=settings.market_timezone,
         )
-        if benchmark_symbol is not None:
-            benchmark_raw = broker.fetch_bars(
-                benchmark_symbol,
-                timeframe=settings.timeframe,
-                lookback_days=settings.lookback_days,
-                now=_utc_now(),
-            )
-            _inject_benchmark(
-                strategy,
-                drop_incomplete_bar(
-                    benchmark_raw,
-                    settings.timeframe,
-                    _utc_now(),
-                    market_timezone=settings.market_timezone,
-                ),
-                benchmark_symbol,
-            )
+        if hasattr(strategy, "set_universe"):
+            strategy.set_universe({symbol: complete})
         signal = strategy.latest_signal(complete, symbol=symbol)
     except (BrokerError, DataError, StrategyError) as exc:
         logger.error("données indisponibles: %s", exc)
@@ -1649,7 +2061,7 @@ def cmd_news(args: argparse.Namespace) -> int:
             flush=True,
         )
 
-    analyzer.assess(symbols, now=datetime.now(UTC), on_progress=emit)
+    analyzer.assess(symbols, now=get_online_now(), on_progress=emit)
 
     if not analyzer.llm_enabled:
         print("\n(Attention : aucune clé OpenRouter, les scores sont neutres.)")
@@ -1734,10 +2146,15 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         logger.error("%s", exc)
         return 2
 
+    # Période de warm-up (200 barres journalières ~ 320 jours calendaires) pour
+    # que la SMA(200) et les calculs de momentum soient actifs dès le jour 1.
+    warmup_days = 320 if args.interval in {"1d", "1Day"} else 30
+    fetch_start = start - timedelta(days=warmup_days)
+
     data: dict[str, BarFrame] = {}
     for symbol in Settings(symbols=args.symbols).symbols:
         try:
-            data[symbol] = provider.fetch(symbol, start, end, interval=args.interval)
+            data[symbol] = provider.fetch(symbol, fetch_start, end, interval=args.interval)
         except DataError as exc:
             logger.error("%s", exc)
             return 1
@@ -1756,7 +2173,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     benchmark_bars: BarFrame | None = None
     try:
         benchmark_bars = provider.fetch(
-            benchmark_symbol, start, end, interval=args.interval
+            benchmark_symbol, fetch_start, end, interval=args.interval
         )
         _inject_benchmark(strategy, benchmark_bars, benchmark_symbol)
     except (DataError, StrategyError) as exc:
@@ -1780,7 +2197,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         config=config,
         risk_config=settings.risk,
     )
-    result = runner.run(data, benchmark=benchmark_bars)
+    result = runner.run(data, benchmark=benchmark_bars, start_date=start)
     print_backtest_summary(result)
 
     if args.output:
@@ -1815,6 +2232,225 @@ def cmd_web(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_withdraw(args: argparse.Namespace) -> int:
+    """Commande ``withdraw`` : retrait manuel ou sanctuarisation de cash."""
+    settings = _settings_from_args(args)
+    logger = configure_logging(settings)
+    try:
+        broker = AlpacaPaperClient(settings)
+    except (ConfigurationError, BrokerError) as exc:
+        logger.error("%s", exc)
+        return 2
+
+    risk = RiskEngine(settings.risk)
+    state_store = StateStore(settings.state_dir / "state.json")
+    persisted = state_store.load()
+
+    try:
+        snapshot = broker.get_account()
+        positions = broker.get_positions()
+    except BrokerError as exc:
+        logger.error("erreur de communication avec le courtier: %s", exc)
+        return 2
+
+    restored: dict[str, Position] = {}
+    for sym, pos in positions.items():
+        stored = persisted.stops.get(sym)
+        if stored:
+            pos.apply_stop_state(stored)
+        restored[sym] = pos
+
+    account = AccountState(
+        equity=snapshot.equity,
+        cash=snapshot.cash,
+        buying_power=snapshot.buying_power,
+        positions=restored,
+    )
+    now = get_online_now()
+
+    if getattr(args, "free_cash", None) is not None:
+        target_cash = float(args.free_cash)
+        if target_cash <= 0:
+            logger.error("le montant free-cash doit être strictement positif")
+            return 2
+        needed = target_cash - account.cash
+        logger.info(
+            "retrait global : cash actuel=%.2f$, cible=%.2f$, besoin=%.2f$",
+            account.cash,
+            target_cash,
+            max(0.0, needed),
+        )
+        if needed > 0:
+            safe_havens = set(settings.safe_haven_symbols)
+            # 1. Vente des positions safe haven en priorité
+            for sym in [s for s in settings.safe_haven_symbols if s in account.positions]:
+                if needed <= 0:
+                    break
+                pos = account.positions[sym]
+                price = pos.current_price
+                if price <= 0:
+                    continue
+                pos_val = pos.qty * price
+                val_to_sell = min(pos_val, needed)
+                qty_to_sell = min(pos.qty, round(val_to_sell / price, 4))
+                if qty_to_sell <= 0:
+                    continue
+                dec = risk.evaluate_manual_withdrawal(
+                    pos, price=price, qty=qty_to_sell, now=now, reason="safe_haven_withdrawal"
+                )
+                if not dec.approved or dec.intent is None:
+                    continue
+                if not settings.dry_run:
+                    if hasattr(broker, "cancel_open_orders"):
+                        broker.cancel_open_orders(sym)
+                    receipt = broker.submit(dec.intent, now=now)
+                    broker.wait_for_fill(receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS)
+                account.cash += qty_to_sell * price
+                needed -= qty_to_sell * price
+                if qty_to_sell >= pos.qty - 1e-6:
+                    account.positions.pop(sym, None)
+                else:
+                    pos.qty -= qty_to_sell
+                logger.info(
+                    "vente repli %s : %.4f titres @ %.2f$ -> +%.2f$ cash",
+                    sym,
+                    qty_to_sell,
+                    price,
+                    qty_to_sell * price,
+                )
+
+            # 2. Si insuffisant, positions offensives les plus gagnantes
+            if needed > 0:
+                offensives = [
+                    p
+                    for sym, p in account.positions.items()
+                    if sym not in safe_havens and p.unrealized_plpc > 0
+                ]
+                offensives.sort(key=lambda p: p.unrealized_plpc, reverse=True)
+                for pos in offensives:
+                    if needed <= 0:
+                        break
+                    price = pos.current_price
+                    if price <= 0:
+                        continue
+                    pos_val = pos.qty * price
+                    val_to_sell = min(pos_val, needed)
+                    qty_to_sell = min(pos.qty, round(val_to_sell / price, 4))
+                    if qty_to_sell <= 0:
+                        continue
+                    dec = risk.evaluate_manual_withdrawal(
+                        pos, price=price, qty=qty_to_sell, now=now, reason="gain_trim_withdrawal"
+                    )
+                    if not dec.approved or dec.intent is None:
+                        continue
+                    if not settings.dry_run:
+                        if hasattr(broker, "cancel_open_orders"):
+                            broker.cancel_open_orders(pos.symbol)
+                        receipt = broker.submit(dec.intent, now=now)
+                        broker.wait_for_fill(receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS)
+                    account.cash += qty_to_sell * price
+                    needed -= qty_to_sell * price
+                    if qty_to_sell >= pos.qty - 1e-6:
+                        account.positions.pop(pos.symbol, None)
+                    else:
+                        pos.qty -= qty_to_sell
+                        if pos.stop_price is not None and not settings.dry_run:
+                            stop_dec = risk.evaluate_stop_replace(pos, price=price, now=now)
+                            if stop_dec is not None and stop_dec.approved and stop_dec.intent is not None:
+                                broker.submit(stop_dec.intent, now=now)
+                    logger.info(
+                        "vente gain %s (+%.1f%%) : %.4f titres @ %.2f$ -> +%.2f$ cash",
+                        pos.symbol,
+                        pos.unrealized_plpc * 100,
+                        qty_to_sell,
+                        price,
+                        qty_to_sell * price,
+                    )
+
+        final_floor = target_cash
+        if not settings.dry_run:
+            update_env_file(PROJECT_ROOT / ".env", {"WITHDRAWABLE_CASH_FLOOR_USD": f"{final_floor:.2f}"})
+            logger.info("plancher WITHDRAWABLE_CASH_FLOOR_USD mis à jour à %.2f$ dans .env", final_floor)
+            persisted.stops = {
+                s: {k: v for k, v in p.stop_state().items() if v is not None}
+                for s, p in account.positions.items()
+            }
+            state_store.save(persisted)
+        else:
+            logger.info("dry-run : plancher WITHDRAWABLE_CASH_FLOOR_USD serait mis à jour à %.2f$", final_floor)
+        return 0
+
+    if getattr(args, "symbol", None):
+        symbol = str(args.symbol).strip().upper()
+        if symbol not in account.positions:
+            logger.error("le symbole %s n'est pas en portefeuille", symbol)
+            return 2
+        pos = account.positions[symbol]
+        price = pos.current_price
+        if price <= 0:
+            logger.error("prix introuvable pour %s", symbol)
+            return 2
+
+        qty: float = 0.0
+        if getattr(args, "amount", None) is not None:
+            amount = float(args.amount)
+            if amount <= 0:
+                logger.error("le montant doit être > 0")
+                return 2
+            qty = min(pos.qty, round(amount / price, 4))
+        elif getattr(args, "pct", None) is not None:
+            pct = float(args.pct)
+            if pct <= 0 or pct > 100:
+                logger.error("le pourcentage doit être compris entre 0 et 100")
+                return 2
+            qty = min(pos.qty, round(pos.qty * (pct / 100.0), 4))
+        else:
+            logger.error("veuillez spécifier soit --amount soit --pct")
+            return 2
+
+        if qty <= 0:
+            logger.error("quantité calculée nulle")
+            return 2
+
+        dec = risk.evaluate_manual_withdrawal(
+            pos, price=price, qty=qty, now=now, reason="manual_withdrawal"
+        )
+        if not dec.approved or dec.intent is None:
+            logger.error("ordre de retrait refusé par le RiskEngine: %s", dec.reason)
+            return 2
+
+        logger.info(
+            "retrait %s : vente de %.4f titres @ %.2f$ (~%.2f$)",
+            symbol,
+            qty,
+            price,
+            qty * price,
+        )
+        if not settings.dry_run:
+            if hasattr(broker, "cancel_open_orders"):
+                broker.cancel_open_orders(symbol)
+            receipt = broker.submit(dec.intent, now=now)
+            broker.wait_for_fill(receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS)
+            account.cash += qty * price
+            if qty >= pos.qty - 1e-6:
+                account.positions.pop(symbol, None)
+            else:
+                pos.qty -= qty
+                if pos.stop_price is not None:
+                    stop_dec = risk.evaluate_stop_replace(pos, price=price, now=now)
+                    if stop_dec is not None and stop_dec.approved and stop_dec.intent is not None:
+                        broker.submit(stop_dec.intent, now=now)
+            persisted.stops = {
+                s: {k: v for k, v in p.stop_state().items() if v is not None}
+                for s, p in account.positions.items()
+            }
+            state_store.save(persisted)
+        return 0
+
+    logger.error("veuillez spécifier soit --symbol avec (--amount ou --pct), soit --free-cash")
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construit le parseur de commandes."""
     parser = argparse.ArgumentParser(
@@ -1828,6 +2464,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     live = subparsers.add_parser("live", help="boucle paper trading")
     live.add_argument("--once", action="store_true", help="exécuter un seul cycle")
+    live.add_argument(
+        "--watch-only",
+        action="store_true",
+        help="mode vigie horaire : surveillance temps réel des stops et news sans nouveaux achats",
+    )
     live.add_argument(
         "--dry-run",
         action="store_true",
@@ -1924,6 +2565,36 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument(
         "--mom-slow", type=int, default=120, help="momentum lent (relative_momentum)"
     )
+    backtest.add_argument(
+        "--shield-pct",
+        type=float,
+        default=0.70,
+        help="allocation bouclier (shield_sword, défaut: 0.70)",
+    )
+    backtest.add_argument(
+        "--sword-pct",
+        type=float,
+        default=0.30,
+        help="allocation épée (shield_sword, défaut: 0.30)",
+    )
+    backtest.add_argument(
+        "--sword-top-n",
+        type=int,
+        default=3,
+        help="nombre d'actions dans l'épée (shield_sword, défaut: 3)",
+    )
+    backtest.add_argument(
+        "--sword-rebalance-days",
+        type=int,
+        default=20,
+        help="jours entre rebalancements (shield_sword, défaut: 20)",
+    )
+    backtest.add_argument(
+        "--sword-trend-sma",
+        type=int,
+        default=100,
+        help="SMA de tendance (shield_sword, défaut: 100)",
+    )
     backtest.add_argument("--output", type=Path, help="fichier JSON de résultats")
     backtest.add_argument("--csv", type=Path, help="fichier CSV de la courbe d'équity")
     backtest.add_argument("--trades", type=Path, help="fichier CSV des trades")
@@ -1938,6 +2609,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="retélécharger les barres puis réécrire le cache",
     )
     backtest.set_defaults(func=cmd_backtest)
+
+    withdraw = subparsers.add_parser(
+        "withdraw", help="retrait de cash manuel ou sanctuarisation de plancher"
+    )
+    withdraw.add_argument("--symbol", help="symbole à vendre (ex: NVDA)")
+    withdraw.add_argument("--amount", type=float, help="montant en dollars à liquider")
+    withdraw.add_argument("--pct", type=float, help="pourcentage de la ligne à liquider (0-100)")
+    withdraw.add_argument("--free-cash", type=float, help="montant de cash cible à sanctuariser")
+    withdraw.add_argument("--dry-run", action="store_true", help="simuler sans transmettre")
+    withdraw.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    withdraw.set_defaults(func=cmd_withdraw)
 
     return parser
 

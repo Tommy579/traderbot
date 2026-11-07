@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Final
 from zoneinfo import ZoneInfo
 
@@ -35,7 +35,6 @@ from trading_bot.data.loader import (
     BarFrame,
     DataError,
     momentum_zscores,
-    trend_regime,
 )
 from trading_bot.risk.engine import (
     AccountState,
@@ -197,6 +196,12 @@ class _Simulation:
     entry_rejections: int = 0
     cash_skips: int = 0
     exit_count: int = 0
+    is_shield_sword: bool = False
+    shield_symbol: str = "SGOV"
+    sword_target_weight: float = 0.10
+    sword_stop_atr_multiplier: float = 5.0
+    sword_max_loss_pct: float = 0.12
+    risk_free_rate_annual: float = 0.045
 
     def process_bar(
         self,
@@ -217,8 +222,11 @@ class _Simulation:
                 self._exit_at(symbol, timestamp, float(row["open"]), "strategy_exit")
                 exited_this_bar = True
             else:
-                position = self.account.positions.get(symbol)
-                if position is not None and position.stop_price is not None:
+                is_shield_asset = self.is_shield_sword and (
+                    symbol == self.shield_symbol
+                    or symbol in self.risk.config.safe_haven_symbols
+                )
+                if not is_shield_asset and position.stop_price is not None:
                     stop = position.stop_price
                     trailing = (
                         position.initial_stop_price is not None
@@ -236,8 +244,7 @@ class _Simulation:
             signal_prev is SignalType.BUY
             and symbol not in self.account.positions
             and not exited_this_bar
-            and math.isfinite(atr_prev)
-            and atr_prev > 0.0
+            and ((math.isfinite(atr_prev) and atr_prev > 0.0) or self.is_shield_sword)
         ):
             self._enter(symbol, timestamp, row, atr_prev, session_date)
 
@@ -246,13 +253,14 @@ class _Simulation:
             meta = self.open_trades.get(symbol)
             if meta is not None and meta.entry_time != timestamp:
                 meta.bars_held += 1
-            trailing_update = self.risk.update_trailing_stop(
-                position,
-                price=float(row["close"]),
-                atr=float(row["atr"]) if math.isfinite(float(row["atr"])) else 0.0,
-            )
-            if trailing_update is not None:
-                self.risk.apply_trailing_stop(self.account, trailing_update)
+            if not self.is_shield_sword:
+                trailing_update = self.risk.update_trailing_stop(
+                    position,
+                    price=float(row["close"]),
+                    atr=float(row["atr"]) if math.isfinite(float(row["atr"])) else 0.0,
+                )
+                if trailing_update is not None:
+                    self.risk.apply_trailing_stop(self.account, trailing_update)
 
         self.marks[symbol] = float(row["close"])
         self.risk.mark_to_market(self.account, self.marks)
@@ -272,6 +280,14 @@ class _Simulation:
             self._recompute_equity()
 
         drawdown = self.account.drawdown_pct
+        if self.is_shield_sword and self.account.cash > 0:
+            daily_rate = self.risk_free_rate_annual / 252.0
+            daily_interest = self.account.cash * daily_rate
+            self.account.cash += daily_interest
+            self.account.buying_power = self.account.cash
+            self._recompute_equity()
+            drawdown = self.account.drawdown_pct
+
         self.equity_rows.append(
             {
                 "timestamp": timestamp,
@@ -296,14 +312,32 @@ class _Simulation:
         self.entry_candidates += 1
         open_price = float(row["open"])
         decision_price = open_price * (1.0 + self.config.slippage_pct)
-        decision = self.risk.evaluate_entry(
-            symbol=symbol,
-            price=decision_price,
-            atr=atr,
-            account=self.account,
-            now=timestamp.to_pydatetime(),
-            session_date=session_date,
+        is_shield_asset = self.is_shield_sword and (
+            symbol == self.shield_symbol
+            or symbol in self.risk.config.safe_haven_symbols
         )
+        if self.is_shield_sword:
+            decision = self.risk.evaluate_entry(
+                symbol=symbol,
+                price=decision_price,
+                atr=atr,
+                account=self.account,
+                now=timestamp.to_pydatetime(),
+                session_date=session_date,
+                target_weight=self.sword_target_weight if not is_shield_asset else 0.70,
+                atr_stop_multiple=self.sword_stop_atr_multiplier if not is_shield_asset else None,
+                max_loss_pct=self.sword_max_loss_pct if not is_shield_asset else None,
+                is_shield=is_shield_asset,
+            )
+        else:
+            decision = self.risk.evaluate_entry(
+                symbol=symbol,
+                price=decision_price,
+                atr=atr,
+                account=self.account,
+                now=timestamp.to_pydatetime(),
+                session_date=session_date,
+            )
         if not decision.approved or decision.intent is None:
             self.entry_rejections += 1
             return
@@ -311,14 +345,14 @@ class _Simulation:
         intent = decision.intent
         qty = intent.qty
         notional = qty * decision_price
-        fee = notional * self.config.commission_pct
+        fee = notional * self.config.commission_pct if not is_shield_asset else 0.0
         cost = notional + fee
         if cost > self.account.cash + _EPSILON:
             # Le plafond de liquidités du risque ne tient pas compte des frais.
             self.cash_skips += 1
             return
         stop_price = intent.stop_price
-        if stop_price is None:
+        if stop_price is None and not is_shield_asset:
             raise BacktestError("entrée approuvée sans stop : invariant violé")
 
         self.account.cash -= cost
@@ -342,7 +376,7 @@ class _Simulation:
         )
 
         # Un stop peut être touché dès la barre d'entrée : on le simule.
-        if float(row["low"]) <= stop_price:
+        if stop_price is not None and float(row["low"]) <= stop_price:
             self._exit_at(symbol, timestamp, stop_price, "stop_loss")
 
     def _exit_at(
@@ -436,15 +470,20 @@ class BacktestRunner:
         data: Mapping[str, BarFrame],
         *,
         benchmark: BarFrame | None = None,
+        start_date: datetime | date | str | None = None,
     ) -> BacktestResult:
         """Backteste ``data`` (un DataFrame OHLCV normalisé par symbole).
 
         Args:
-            data: Barres par symbole à trader.
+            data: Barres par symbole à trader (peut inclure une période de
+                warm-up antérieure à ``start_date``).
             benchmark: Barres du benchmark (SPY), jamais tradées : elles
                 pilotent le régime de marché (SMA longue) qui desserre les
                 plafonds d'exposition. Sans benchmark, le régime est
                 systématiquement prudent.
+            start_date: Début effectif de la simulation. Si spécifié, les
+                barres antérieures servent de warm-up pour stabiliser la
+                SMA(200) et les indicateurs sans déclencher d'ordres.
 
         Raises:
             BacktestError: données vides, index incohérents ou stratégie en
@@ -452,6 +491,12 @@ class BacktestRunner:
         """
         if not data:
             raise BacktestError("aucune donnée fournie au backtest")
+        if hasattr(self._strategy, "set_start_date"):
+            self._strategy.set_start_date(start_date)
+        if hasattr(self._strategy, "set_benchmark") and benchmark is not None:
+            self._strategy.set_benchmark(benchmark)
+        if hasattr(self._strategy, "set_universe"):
+            self._strategy.set_universe(data)
         symbols = sorted(data)
         prepared: dict[str, BarFrame] = {}
         for symbol in symbols:
@@ -472,7 +517,24 @@ class BacktestRunner:
         if len(index) < 2:
             raise BacktestError("au moins deux barres sont nécessaires")
 
+        start_ts: pd.Timestamp | None = None
+        if start_date is not None:
+            start_ts = pd.Timestamp(start_date)
+            if start_ts.tzinfo is None:
+                start_ts = start_ts.tz_localize("UTC")
+            else:
+                start_ts = start_ts.tz_convert("UTC")
+
+        sim_index = (
+            pd.DatetimeIndex([ts for ts in index if ts >= start_ts])
+            if start_ts is not None
+            else index
+        )
+        if len(sim_index) < 2:
+            sim_index = index
+
         risk = RiskEngine(self._risk_config)
+        is_shield_sword = getattr(self._strategy, "name", "") == "shield_sword"
         simulation = _Simulation(
             config=self._config,
             risk=risk,
@@ -481,19 +543,22 @@ class BacktestRunner:
                 cash=self._config.initial_equity,
                 buying_power=self._config.initial_equity,
             ),
+            is_shield_sword=is_shield_sword,
         )
 
         # Régime de marché par séance : benchmark au-dessus de sa SMA longue.
         # La valeur utilisée à la barre t est celle de la barre de signal
         # (t - execution_delay_bars), comme pour les signaux eux-mêmes.
-        regime_by_date: dict[pd.Timestamp, bool] = {}
-        if benchmark is not None and not benchmark.empty:
-            regime = trend_regime(benchmark).shift(self._config.execution_delay_bars)
-            regime_by_date = {
-                timestamp: bool(value)
-                for timestamp, value in regime.items()
-                if pd.notna(value)
-            }
+        regime_by_date: dict[pd.Timestamp, tuple[bool, bool]] = {}
+        if benchmark is not None and not benchmark.empty and "close" in benchmark.columns:
+            close = benchmark["close"].astype(float)
+            sma_period = self._risk_config.regime_sma_period
+            if len(close) >= sma_period:
+                sma = close.rolling(sma_period).mean()
+                bull = (close > sma).where(sma.notna(), False).astype(bool).shift(self._config.execution_delay_bars)
+                bear = (close <= sma).where(sma.notna(), False).astype(bool).shift(self._config.execution_delay_bars)
+                for ts in benchmark.index:
+                    regime_by_date[ts] = (bool(bull.get(ts, False)), bool(bear.get(ts, False)))
 
         # Score de classement par symbole (z-score de momentum, même mesure que
         # le live) : à chaque barre d'exécution, le budget va d'abord au plus
@@ -505,9 +570,9 @@ class BacktestRunner:
                 self._config.execution_delay_bars
             )
 
-        for timestamp in index:
-            bull_market = regime_by_date.get(timestamp, False)
-            risk.set_market_regime(bull_market=bull_market)
+        for timestamp in sim_index:
+            bull_market, bear_market = regime_by_date.get(timestamp, (False, False))
+            risk.set_market_regime(bull_market=bull_market, bear_market=bear_market)
             scores = {
                 symbol: float(scores_by_symbol[symbol].get(timestamp, float("nan")))
                 for symbol in symbols

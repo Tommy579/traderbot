@@ -608,13 +608,21 @@ def test_build_strategy_selection() -> None:
     from trading_bot.strategies.donchian_breakout import DonchianBreakoutStrategy
     from trading_bot.strategies.ema_cross import EmaCrossStrategy
     from trading_bot.strategies.relative_momentum import RelativeMomentumStrategy
+    from trading_bot.strategies.shield_sword import ShieldSwordStrategy
 
     assert isinstance(build_strategy("ema_cross"), EmaCrossStrategy)
     assert isinstance(build_strategy("donchian_breakout"), DonchianBreakoutStrategy)
     momentum = build_strategy("relative_momentum")
     assert isinstance(momentum, RelativeMomentumStrategy)
     assert momentum.benchmark_symbol == "SPY"
-    assert set(STRATEGY_NAMES) == {"ema_cross", "donchian_breakout", "relative_momentum"}
+    shield = build_strategy("shield_sword")
+    assert isinstance(shield, ShieldSwordStrategy)
+    assert set(STRATEGY_NAMES) == {
+        "ema_cross",
+        "donchian_breakout",
+        "relative_momentum",
+        "shield_sword",
+    }
 
     # Surcharges CLI réservées au backtest : ignorées ailleurs par défaut.
     namespace = argparse.Namespace(entry=30, exit_channel=15, sma_long=100)
@@ -880,3 +888,116 @@ def test_cycle_sends_webhook_report(settings, bot_bars) -> None:
     bot._broker = closed_broker
     bot.run_once()
     assert len(notifier.events) == 1
+
+
+def test_watch_only_does_not_open_new_positions(settings, bot_bars) -> None:
+    """En vigie horaire, aucun nouvel achat stratégique n'est initié."""
+    broker = FakeBroker()
+    bot = make_bot(settings, bot_bars, broker, strategy=AlwaysBuyStrategy())
+    report = bot.run_watch_only()
+
+    assert report.mode == "watch_only"
+    assert not report.skipped
+    assert broker.orders == []
+    assert report.signals == {}
+    assert report.decisions == []
+
+
+def test_watch_only_cuts_position_below_daily_stop_loss(settings, bot_bars) -> None:
+    """La vigie horaire liquide immédiatement une position sous son stop ATR journalier."""
+    StateStore(settings.state_dir / "state.json").save(
+        PersistedState(
+            trading_day="2024-01-10",
+            day_start_equity=100_000.0,
+            peak_equity=100_000.0,
+            stops={"AAPL": {"stop_price": 98.0, "initial_stop_price": 98.0}},
+        )
+    )
+    position = Position(
+        symbol="AAPL",
+        qty=100.0,
+        avg_entry_price=100.0,
+        current_price=95.0,
+        stop_price=98.0,
+        initial_stop_price=98.0,
+    )
+    broker = FakeBroker(positions={"AAPL": position}, prices={"AAPL": 95.0})
+    bot = make_bot(settings, bot_bars, broker)
+    report = bot.run_watch_only()
+
+    assert report.mode == "watch_only"
+    assert len(broker.orders) == 1
+    assert broker.orders[0].side is Side.SELL
+    assert any(decision.reason == "stop_loss" for decision in report.decisions)
+
+
+def test_watch_only_cuts_position_on_news_panic_exit(settings, bot_bars) -> None:
+    """La vigie horaire coupe la position dès réception d'une alerte critique d'actualité."""
+    StateStore(settings.state_dir / "state.json").save(
+        PersistedState(
+            trading_day="2024-01-10",
+            day_start_equity=100_000.0,
+            peak_equity=100_000.0,
+            stops={"AAPL": {"stop_price": 90.0, "initial_stop_price": 90.0}},
+        )
+    )
+    position = Position(
+        symbol="AAPL",
+        qty=50.0,
+        avg_entry_price=100.0,
+        current_price=101.0,
+        stop_price=90.0,
+        initial_stop_price=90.0,
+    )
+    broker = FakeBroker(positions={"AAPL": position}, prices={"AAPL": 101.0})
+    news = FakeNewsAnalyzer({"AAPL": make_news(-0.95, critical=True, symbol="AAPL")})
+    bot = TradingBot(
+        settings,
+        AlwaysBuyStrategy(),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bot_bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+        news_analyzer=news,  # type: ignore[arg-type]
+    )
+    report = bot.run_watch_only()
+
+    assert report.mode == "watch_only"
+    assert len(broker.orders) == 1
+    assert broker.orders[0].side is Side.SELL
+    assert any("news_panic_exit" in decision.reason for decision in report.decisions)
+
+
+def test_watch_only_leaves_healthy_position_intact(settings, bot_bars) -> None:
+    """Une position saine (au-dessus du stop, sans alerte) n'est pas touchée."""
+    StateStore(settings.state_dir / "state.json").save(
+        PersistedState(
+            trading_day="2024-01-10",
+            day_start_equity=100_000.0,
+            peak_equity=100_000.0,
+            stops={"AAPL": {"stop_price": 90.0, "initial_stop_price": 90.0}},
+        )
+    )
+    position = Position(
+        symbol="AAPL",
+        qty=50.0,
+        avg_entry_price=100.0,
+        current_price=105.0,
+        stop_price=90.0,
+        initial_stop_price=90.0,
+    )
+    broker = FakeBroker(positions={"AAPL": position}, prices={"AAPL": 105.0})
+    news = FakeNewsAnalyzer({"AAPL": make_news(0.10, critical=False, symbol="AAPL")})
+    bot = TradingBot(
+        settings,
+        AlwaysBuyStrategy(),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bot_bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+        news_analyzer=news,  # type: ignore[arg-type]
+    )
+    report = bot.run_watch_only()
+
+    assert report.mode == "watch_only"
+    assert broker.orders == []
+    assert report.decisions == []
+

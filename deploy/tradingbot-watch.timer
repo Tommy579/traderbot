@@ -1,0 +1,14 @@
+# Timer systemd UTILISATEUR : vigie horaire de 10:00 à 15:00 heure de New York
+# (16:00 à 21:00 heure de Paris) pendant les heures de cotation US.
+# Surveillance temps réel des stops et alertes d'actualités.
+
+[Unit]
+Description=TradingBot Alpaca - vigie horaire (10h-15h New York)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 10..15:00:00 America/New_York
+Persistent=false
+Unit=tradingbot-watch.service
+
+[Install]
+WantedBy=timers.target

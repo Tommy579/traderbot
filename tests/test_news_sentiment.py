@@ -35,7 +35,7 @@ from trading_bot.risk.engine import (
 
 NOW = datetime(2024, 1, 10, 15, 0, tzinfo=UTC)
 SESSION = date(2024, 1, 10)
-MODEL = "deepseek/deepseek-v4.1-flash-1017"
+MODEL = "google/gemini-3.8-flash"
 
 
 # ---------------------------------------------------------------------------
@@ -787,7 +787,7 @@ def test_settings_expose_the_news_defaults() -> None:
     assert settings.news_filter_enabled is True
     assert settings.openrouter_model == MODEL
     assert settings.news_lookback_hours == 24
-    assert settings.news_timeout_seconds == pytest.approx(20.0)
+    assert settings.news_timeout_seconds == pytest.approx(5.0)
     assert settings.risk.news_veto_threshold == pytest.approx(-0.60)
     assert settings.risk.news_panic_exit_threshold == pytest.approx(-0.85)
 

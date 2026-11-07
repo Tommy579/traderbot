@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import re
 from pathlib import Path
 from typing import Annotated, Literal
@@ -163,10 +164,83 @@ class RiskConfig(BaseModel):
             "en urgence (news_panic_exit)."
         ),
     )
+    safe_haven_enabled: bool = Field(
+        True,
+        description="Active la poche de repli défensive automatique (Safe Haven / Cash Sweep).",
+    )
+    safe_haven_symbols: list[str] = Field(
+        default_factory=lambda: ["BRK.B", "WMT", "KO"],
+        description="Symboles de la poche de repli.",
+    )
+    cash_buffer_pct: float = Field(
+        0.10,
+        ge=0.0,
+        le=1.0,
+        description="Fraction minimale d'équité conservée en cash pur (10 % = 0.10).",
+    )
+    max_safe_haven_total_pct: float = Field(
+        0.50,
+        ge=0.0,
+        le=1.0,
+        description="Plafond total d'exposition sur la poche de repli (50 % = 0.50).",
+    )
+    regime_sma_period: int = Field(
+        200,
+        ge=2,
+        le=1000,
+        description="Période de la moyenne mobile sur SPY pour la détection du régime.",
+    )
+    withdrawable_cash_floor_usd: float = Field(
+        0.0,
+        ge=0.0,
+        description=(
+            "Montant minimal en dollars sanctuarisé sur le compte en cash pur, "
+            "jamais réinvesti ni dans l'univers ni dans la poche de repli."
+        ),
+    )
+    equity_hard_floor_usd: float = Field(
+        0.0,
+        ge=0.0,
+        description=(
+            "Limite basse absolue du portefeuille total : si l'équité passe sous "
+            "ce seuil, liquidation intégrale et arrêt de tout nouvel achat."
+        ),
+    )
+    partial_take_profit_pct: float = Field(
+        0.20,
+        ge=0.0,
+        le=10.0,
+        description=(
+            "Seuil de plus-value latente par action déclenchant une prise de profit "
+            "partielle (ex: +20 % = 0.20)."
+        ),
+    )
+    partial_take_profit_sell_ratio: float = Field(
+        0.50,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Proportion de la position vendue lors d'une prise de profit partielle "
+            "(ex: 50 % = 0.50)."
+        ),
+    )
+    max_single_position_weight: float = Field(
+        0.25,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Poids maximal d'une position dans l'équité totale avant écrémage "
+            "automatique du surplus (ex: 25 % = 0.25)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_coherence(self) -> RiskConfig:
         """Vérifie les invariants croisés du profil de risque."""
+        if self.safe_haven_enabled and not self.safe_haven_symbols:
+            raise ValueError("safe_haven_symbols ne peut pas être vide si safe_haven_enabled est activé")
+        if self.cash_buffer_pct + self.max_safe_haven_total_pct > 1.0:
+            raise ValueError("cash_buffer_pct + max_safe_haven_total_pct ne peut pas dépasser 1.0")
         if self.news_panic_exit_threshold > self.news_veto_threshold:
             raise ValueError(
                 "news_panic_exit_threshold doit être inférieur ou égal à "
@@ -259,6 +333,14 @@ class Settings(BaseSettings):
             "Benchmark du régime de marché et de la force relative (jamais tradé)."
         ),
     )
+    safe_haven_enabled: bool = Field(
+        True,
+        description="Active la poche de repli défensive automatique (Safe Haven / Cash Sweep).",
+    )
+    safe_haven_symbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["BRK.B", "WMT", "KO"],
+        description="Poche de repli défensive automatique (exclue des offensifs).",
+    )
     timeframe: Timeframe = "1Day"
     lookback_days: int = Field(400, ge=60, le=3650)
     poll_interval_seconds: int = Field(60, ge=5, le=3600)
@@ -332,11 +414,9 @@ class Settings(BaseSettings):
         ),
     )
     openrouter_model: str = Field(
-        "deepseek/deepseek-v4.1-flash-1017",
+        "google/gemini-3.8-flash",
         description=(
-            "Modèle OpenRouter, retenu pour son coût : ~0.10 centime par appel "
-            "observé, contre ~0.34 pour google/gemini-3.8-flash. Le préfixe du "
-            "fournisseur est obligatoire, sous peine d'identifiant introuvable."
+            "Modèle OpenRouter pour l'analyse de sentiment des actualités."
         ),
     )
     news_lookback_hours: int = Field(
@@ -352,14 +432,66 @@ class Settings(BaseSettings):
         ),
     )
     news_timeout_seconds: float = Field(
-        20.0,
+        5.0,
         ge=1.0,
         le=60.0,
         description=(
-            "Délai maximal d'un appel OpenRouter. Mesuré à ~6 s pour 8 articles "
-            "avec le modèle par défaut : un délai plus court ferait échouer "
-            "tous les appels, et le filtre resterait neutre en silence."
+            "Délai maximal d'un appel OpenRouter en secondes (défaut 5s)."
         ),
+    )
+
+    # --- Stratégie Bouclier + Épée (Shield + Sword / Core-Satellite CPPI) ---
+    shield_allocation_pct: float = Field(
+        0.70,
+        ge=0.0,
+        le=1.0,
+        description="Fraction du portefeuille allouée au Bouclier (défensif/cash).",
+    )
+    sword_allocation_pct: float = Field(
+        0.30,
+        ge=0.0,
+        le=1.0,
+        description="Fraction du portefeuille allouée à l'Épée (Top N offensif).",
+    )
+    sword_top_n: int = Field(
+        3,
+        ge=1,
+        le=20,
+        description="Nombre maximal d'actions offensives détenues dans l'Épée.",
+    )
+    sword_rebalance_days: int = Field(
+        20,
+        ge=1,
+        le=252,
+        description="Périodicité de rebalancement de l'Épée en jours de bourse.",
+    )
+    sword_trend_sma: int = Field(
+        100,
+        ge=10,
+        le=500,
+        description="Période de la moyenne mobile de tendance (SMA) pour l'Épée.",
+    )
+    sword_stop_atr_multiplier: float = Field(
+        5.0,
+        ge=1.0,
+        le=20.0,
+        description="Multiple d'ATR pour le stop catastrophe large de l'Épée.",
+    )
+    sword_max_loss_pct: float = Field(
+        0.12,
+        ge=0.01,
+        le=0.50,
+        description="Perte maximale par ligne de l'Épée (12 % = 0.12).",
+    )
+    risk_free_rate_annual: float = Field(
+        0.045,
+        ge=0.0,
+        le=0.20,
+        description="Taux sans risque annuel pour la rémunération du Bouclier (4.5 % = 0.045).",
+    )
+    shield_symbol: str = Field(
+        "SGOV",
+        description="Actif prioritaire du Bouclier (ETF Bons du Trésor US court terme).",
     )
 
     risk: RiskConfig = Field(default_factory=RiskConfig)
@@ -381,6 +513,14 @@ class Settings(BaseSettings):
     fractional_shares: bool | None = None
     news_veto_threshold: float | None = None
     news_panic_exit_threshold: float | None = None
+    cash_buffer_pct: float | None = None
+    max_safe_haven_total_pct: float | None = None
+    regime_sma_period: int | None = None
+    withdrawable_cash_floor_usd: float | None = None
+    equity_hard_floor_usd: float | None = None
+    partial_take_profit_pct: float | None = None
+    partial_take_profit_sell_ratio: float | None = None
+    max_single_position_weight: float | None = None
 
     @field_validator("symbols", mode="before")
     @classmethod
@@ -404,6 +544,30 @@ class Settings(BaseSettings):
                 seen.append(normalized)
         if not seen:
             raise ValueError("l'univers de trading ne peut pas être vide")
+        return seen
+
+    @field_validator("safe_haven_symbols", mode="before")
+    @classmethod
+    def _parse_safe_haven_symbols(cls, value: object) -> object:
+        """Accepte ``"BRK.B,WMT,KO"`` en plus d'une liste JSON."""
+        if isinstance(value, str):
+            raw = value.replace(";", ",").split(",")
+            return [item.strip().upper() for item in raw if item.strip()]
+        return value
+
+    @field_validator("safe_haven_symbols")
+    @classmethod
+    def _validate_safe_haven_symbols(cls, values: list[str]) -> list[str]:
+        """Normalise la poche de repli et rejette les tickers invalides."""
+        seen: list[str] = []
+        for symbol in values:
+            normalized = symbol.strip().upper()
+            if not _SYMBOL_RE.match(normalized):
+                raise ValueError(f"symbole safe haven invalide: {symbol!r}")
+            if normalized not in seen:
+                seen.append(normalized)
+        if not seen:
+            raise ValueError("safe_haven_symbols ne peut pas être vide")
         return seen
 
     @field_validator("benchmark_symbol")
@@ -442,16 +606,24 @@ class Settings(BaseSettings):
             raise ValueError("lookback_days trop court pour les indicateurs")
 
         # Le benchmark est une référence, jamais un actif : s'il traîne dans
-        # l'univers (faute de frappe, copier-coller), le bot achèterait sa
-        # propre référence et le panier doublerait l'exposition au marché.
+        # l'univers ou dans les safe havens, il est retiré automatiquement.
         if self.benchmark_symbol in self.symbols:
             self.symbols = [
                 symbol for symbol in self.symbols if symbol != self.benchmark_symbol
             ]
+        if self.benchmark_symbol in self.safe_haven_symbols:
+            self.safe_haven_symbols = [
+                symbol for symbol in self.safe_haven_symbols if symbol != self.benchmark_symbol
+            ]
+
+        # Les symboles safe haven sont exclus automatiquement de l'univers offensif
+        safe_set = set(self.safe_haven_symbols)
+        self.symbols = [symbol for symbol in self.symbols if symbol not in safe_set]
+
         if not self.symbols:
             raise ValueError(
-                "l'univers de trading serait vide une fois le benchmark "
-                f"{self.benchmark_symbol} retiré : ajoutez au moins un autre symbole"
+                "l'univers de trading serait vide une fois le benchmark et les "
+                "safe havens retirés : ajoutez au moins un autre symbole"
             )
 
         risk_fields = (
@@ -470,6 +642,16 @@ class Settings(BaseSettings):
             "fractional_shares",
             "news_veto_threshold",
             "news_panic_exit_threshold",
+            "safe_haven_enabled",
+            "safe_haven_symbols",
+            "cash_buffer_pct",
+            "max_safe_haven_total_pct",
+            "regime_sma_period",
+            "withdrawable_cash_floor_usd",
+            "equity_hard_floor_usd",
+            "partial_take_profit_pct",
+            "partial_take_profit_sell_ratio",
+            "max_single_position_weight",
         )
         overrides = {
             name: getattr(self, name)
@@ -551,3 +733,39 @@ def configure_logging(settings: Settings) -> logging.Logger:
         logger.addHandler(file_handler)
 
     return logger
+
+
+def update_env_file(env_path: Path, updates: dict[str, str]) -> None:
+    """Mise à jour robuste du .env : évite les doublons et préserve le formatage."""
+    lines = (
+        env_path.read_text(encoding="utf-8").splitlines()
+        if env_path.exists()
+        else []
+    )
+
+    for key, value in updates.items():
+        # Un retour à la ligne dans une valeur permettrait d'injecter une clé
+        # arbitraire dans le .env : on refuse.
+        if any(c in f"{key}{value}" for c in ("\n", "\r", "\0")):
+            raise ValueError(f"valeur invalide pour {key} : caractère de contrôle interdit")
+        target = f"{key}={value}" if value else f"# {key}="
+        found = False
+        for i, line in enumerate(lines):
+            if re.match(rf"^#*\s*{re.escape(key)}=.*$", line):
+                lines[i] = target
+                found = True
+                break
+
+        if not found:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.append(target)
+
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = env_path.with_suffix(env_path.suffix + ".tmp")
+    # Le .env contient les clés Alpaca : lecture/écriture réservées au propriétaire.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o600)
+    tmp.replace(env_path)

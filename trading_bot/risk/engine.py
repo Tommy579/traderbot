@@ -76,6 +76,8 @@ class RejectionCode(StrEnum):
     BELOW_MIN_NOTIONAL = "BELOW_MIN_NOTIONAL"
     INVALID_STOP = "INVALID_STOP"
     NEWS_VETO = "NEWS_VETO"
+    BEAR_REGIME_VETO = "BEAR_REGIME_VETO"
+    EQUITY_FLOOR_BREACHED = "EQUITY_FLOOR_BREACHED"
 
 
 class NewsSignal(Protocol):
@@ -216,6 +218,7 @@ class Position:
     initial_stop_price: float | None = None
     highest_price: float = 0.0
     opened_at: datetime | None = None
+    partial_tp_taken: bool = False
 
     def __post_init__(self) -> None:
         if not self.symbol:
@@ -248,6 +251,11 @@ class Position:
         return 0.0 if cost <= 0 else self.unrealized_pnl / cost
 
     @property
+    def unrealized_plpc(self) -> float:
+        """Alias pour le P&L latent en pourcentage."""
+        return self.unrealized_pnl_pct
+
+    @property
     def risk_per_share(self) -> float | None:
         """Risque initial par action (entrée - stop initial), si défini."""
         if self.initial_stop_price is None:
@@ -263,12 +271,13 @@ class Position:
             return 0.0
         return (self.current_price - self.avg_entry_price) / risk
 
-    def stop_state(self) -> dict[str, float | None]:
+    def stop_state(self) -> dict[str, object]:
         """État minimal à persister pour restaurer la protection après restart."""
         return {
             "stop_price": self.stop_price,
             "initial_stop_price": self.initial_stop_price,
             "highest_price": self.highest_price,
+            "partial_tp_taken": self.partial_tp_taken,
         }
 
     def apply_stop_state(self, state: Mapping[str, object]) -> None:
@@ -276,12 +285,15 @@ class Position:
         stop = state.get("stop_price")
         initial = state.get("initial_stop_price")
         highest = state.get("highest_price")
+        partial_tp = state.get("partial_tp_taken")
         if isinstance(stop, (int, float)) and stop > 0:
             self.stop_price = float(stop)
         if isinstance(initial, (int, float)) and initial > 0:
             self.initial_stop_price = float(initial)
         if isinstance(highest, (int, float)) and highest > 0:
             self.highest_price = max(float(highest), self.highest_price)
+        if isinstance(partial_tp, bool):
+            self.partial_tp_taken = partial_tp
 
 
 @dataclass(slots=True)
@@ -376,6 +388,7 @@ class RiskEngine:
         self._resumptions: list[str] = []
         self._sequence = 0
         self._bull_market = False
+        self._bear_market = False
 
     @property
     def config(self) -> RiskConfig:
@@ -387,16 +400,25 @@ class RiskEngine:
         """Régime de marché courant (benchmark au-dessus de sa SMA longue)."""
         return self._bull_market
 
-    def set_market_regime(self, *, bull_market: bool) -> None:
+    @property
+    def bear_market(self) -> bool:
+        """Régime de marché baissier (benchmark en-dessous de sa SMA longue)."""
+        return self._bear_market
+
+    def set_market_regime(
+        self,
+        *,
+        bull_market: bool,
+        bear_market: bool = False,
+    ) -> None:
         """Fixe le régime de marché pour la suite des décisions.
 
-        Appelé une fois par séance par l'orchestration, à partir de la
-        clôture du benchmark par rapport à sa SMA longue. En régime haussier,
-        les plafonds de position et d'exposition brute prennent leurs valeurs
-        ``bull_*`` ; dans le doute (pas de données), l'appelant passe ``False``
-        et le profil de base s'applique.
+        Appelé à chaque cycle par l'orchestration, à partir de la clôture
+        du benchmark par rapport à sa SMA (par défaut 200).
+        Si le benchmark est sous sa SMA, bear_market est True.
         """
         self._bull_market = bool(bull_market)
+        self._bear_market = bool(bear_market)
 
     def effective_position_cap_pct(self) -> float:
         """Plafond de poids de position selon le régime courant."""
@@ -492,6 +514,20 @@ class RiskEngine:
                 reason="équity nulle ou négative : trading interrompu",
             )
 
+        if (
+            self._config.equity_hard_floor_usd > 0.0
+            and account.equity <= self._config.equity_hard_floor_usd
+        ):
+            return self._halt(
+                account,
+                session_date=session_date,
+                scope=HaltScope.PERMANENT,
+                reason=(
+                    f"équité {account.equity:.2f} <= plancher de sécurité "
+                    f"{self._config.equity_hard_floor_usd:.2f} [EQUITY_FLOOR_BREACHED]"
+                ),
+            )
+
         if account.drawdown_pct <= -self._config.max_drawdown_pct:
             return self._halt(
                 account,
@@ -537,6 +573,10 @@ class RiskEngine:
         now: datetime,
         session_date: date,
         news: NewsSignal | None = None,
+        target_weight: float | None = None,
+        atr_stop_multiple: float | None = None,
+        max_loss_pct: float | None = None,
+        is_shield: bool = False,
     ) -> RiskDecision:
         """Valide et dimensionne une entrée longue.
 
@@ -587,10 +627,33 @@ class RiskEngine:
             return self._reject(
                 RejectionCode.INVALID_REQUEST, "ATR non fini ou négatif", now, base_metrics
             )
+        if (
+            self._config.equity_hard_floor_usd > 0.0
+            and account.equity <= self._config.equity_hard_floor_usd
+        ):
+            return self._reject(
+                RejectionCode.EQUITY_FLOOR_BREACHED,
+                (
+                    f"[EQUITY_FLOOR_BREACHED] équité {account.equity:.2f} <= "
+                    f"plancher de sécurité {self._config.equity_hard_floor_usd:.2f}"
+                ),
+                now,
+                base_metrics,
+            )
         if account.halted:
             return self._reject(
                 RejectionCode.HALTED,
                 account.halt_reason or "circuit breaker actif",
+                now,
+                base_metrics,
+            )
+        if self._bear_market and symbol not in self._config.safe_haven_symbols and not is_shield:
+            return self._reject(
+                RejectionCode.BEAR_REGIME_VETO,
+                (
+                    f"[BEAR_REGIME_VETO] marché baissier ({self._config.regime_sma_period} SMA) : "
+                    f"entrée offensive interdite sur {symbol}"
+                ),
                 now,
                 base_metrics,
             )
@@ -618,7 +681,12 @@ class RiskEngine:
                 now,
                 base_metrics,
             )
-        if len(account.active_positions()) >= self._config.max_open_positions:
+        offensive_positions = [
+            p
+            for sym, p in account.positions.items()
+            if p.qty > 0 and sym not in self._config.safe_haven_symbols and sym != "SGOV"
+        ]
+        if not is_shield and len(offensive_positions) >= self._config.max_open_positions:
             return self._reject(
                 RejectionCode.MAX_POSITIONS_REACHED,
                 f"maximum de {self._config.max_open_positions} positions atteint",
@@ -626,21 +694,41 @@ class RiskEngine:
                 base_metrics,
             )
 
-        stop_distance = atr * self._config.atr_stop_multiple
-        stop_price = round(price - stop_distance, 2)
-        if stop_price <= 0:
-            return self._reject(
-                RejectionCode.INVALID_STOP,
-                f"stop ATR non positif ({stop_price:.2f})",
-                now,
-                {**base_metrics, "stop_distance": stop_distance},
+        if is_shield:
+            stop_price = None
+            stop_distance = 0.0
+        else:
+            mult = (
+                atr_stop_multiple
+                if atr_stop_multiple is not None
+                else self._config.atr_stop_multiple
             )
+            stop_distance = atr * mult
+            stop_by_atr = price - stop_distance
+            if max_loss_pct is not None:
+                stop_by_loss = price * (1.0 - max_loss_pct)
+                stop_price = round(max(stop_by_atr, stop_by_loss), 2)
+            else:
+                stop_price = round(stop_by_atr, 2)
+            if stop_price <= 0:
+                return self._reject(
+                    RejectionCode.INVALID_STOP,
+                    f"stop ATR non positif ({stop_price:.2f})",
+                    now,
+                    {**base_metrics, "stop_distance": stop_distance},
+                )
 
         gross_remaining = max(
             0.0,
             account.equity * self.effective_gross_cap_pct() - account.gross_exposure,
         )
-        cash_available = max(0.0, min(account.cash, account.buying_power))
+        cash_buffer = (
+            account.equity * self._config.cash_buffer_pct
+            if (self._config.safe_haven_enabled and not is_shield)
+            else 0.0
+        )
+        protected_cash = max(cash_buffer, self._config.withdrawable_cash_floor_usd)
+        cash_available = max(0.0, min(account.cash - protected_cash, account.buying_power))
         if cash_available <= 0.0:
             return self._reject(
                 RejectionCode.INSUFFICIENT_BUYING_POWER,
@@ -659,22 +747,35 @@ class RiskEngine:
                 base_metrics,
             )
 
-        risk_budget = account.equity * self._config.risk_per_trade_pct
-        qty_by_risk = risk_budget / stop_distance
-        notional_cap = min(
-            account.equity * self.effective_position_cap_pct(),
-            gross_remaining,
-            cash_available,
-        )
-        qty_by_notional = notional_cap / price
-        raw_qty = min(qty_by_risk, qty_by_notional)
+        if target_weight is not None:
+            notional_cap = min(
+                account.equity * target_weight,
+                gross_remaining,
+                cash_available,
+            )
+            raw_qty = notional_cap / price
+            qty_by_risk = raw_qty
+            qty_by_notional = raw_qty
+            risk_budget = raw_qty * stop_distance
+            binding = "target_weight"
+        else:
+            risk_budget = account.equity * self._config.risk_per_trade_pct
+            qty_by_risk = risk_budget / stop_distance
+            notional_cap = min(
+                account.equity * self.effective_position_cap_pct(),
+                gross_remaining,
+                cash_available,
+            )
+            qty_by_notional = notional_cap / price
+            raw_qty = min(qty_by_risk, qty_by_notional)
+            binding = "risk" if qty_by_risk <= qty_by_notional else "notional"
         qty = self._round_qty(raw_qty)
         binding = "risk" if qty_by_risk <= qty_by_notional else "notional"
 
         metrics: dict[str, float] = {
             **base_metrics,
             "stop_distance": stop_distance,
-            "stop_price": stop_price,
+            "stop_price": float(stop_price) if stop_price is not None else 0.0,
             "risk_budget": risk_budget,
             "qty_by_risk": qty_by_risk,
             "qty_by_notional": qty_by_notional,
@@ -731,8 +832,9 @@ class RiskEngine:
         price: float,
         now: datetime,
         reason: str,
+        qty: float | None = None,
     ) -> RiskDecision:
-        """Approuve la liquidation complète d'une position.
+        """Approuve la liquidation complète ou partielle d'une position.
 
         Une sortie reste possible lorsque le circuit breaker est actif : c'est
         précisément le mécanisme de mise à plat du portefeuille.
@@ -746,28 +848,221 @@ class RiskEngine:
         if not math.isfinite(price) or price <= 0:
             raise RiskError(f"prix de sortie invalide pour {position.symbol}: {price!r}")
 
+        sell_qty = position.qty if qty is None else min(position.qty, self._round_qty(qty))
+        if sell_qty <= 0:
+            raise RiskError(f"quantité à vendre nulle pour {position.symbol}")
+
         token = self._mint_token(
             symbol=position.symbol,
             side=Side.SELL,
-            qty=position.qty,
+            qty=sell_qty,
             now=now,
         )
         intent = OrderIntent(
             symbol=position.symbol,
             side=Side.SELL,
-            qty=position.qty,
+            qty=sell_qty,
             token=token,
             order_type=OrderType.MARKET,
             reason=reason,
         )
         metrics = {
             "price": price,
-            "qty": position.qty,
-            "notional": position.qty * price,
-            "unrealized_pnl": position.unrealized_pnl,
+            "qty": sell_qty,
+            "notional": sell_qty * price,
+            "unrealized_pnl": (price - position.avg_entry_price) * sell_qty,
             "r_multiple": position.r_multiple,
         }
         return self._approve(intent, now, metrics)
+
+    def evaluate_safe_haven_unwind(
+        self,
+        account: AccountState,
+        needed_cash: float,
+        prices: Mapping[str, float],
+        now: datetime,
+        *,
+        reason: str = "safe_haven_unwind",
+    ) -> list[RiskDecision]:
+        """Génère les ordres de vente nécessaires sur la poche safe haven pour libérer du cash.
+
+        Seul le montant nécessaire (needed_cash) est vendu, dans la limite des
+        positions de repli disponibles.
+        """
+        self._require_aware(now)
+        if not self._config.safe_haven_enabled or needed_cash <= 0:
+            return []
+
+        decisions: list[RiskDecision] = []
+        remaining_shortfall = needed_cash
+
+        # Parcourt les positions de repli dans un ordre déterministe
+        safe_positions = [
+            p
+            for sym, p in sorted(account.positions.items())
+            if sym in self._config.safe_haven_symbols and p.qty > 0
+        ]
+
+        for pos in safe_positions:
+            if remaining_shortfall <= 0:
+                break
+            price = prices.get(pos.symbol, pos.current_price)
+            if price <= 0 or not math.isfinite(price):
+                continue
+
+            pos_value = pos.qty * price
+            if pos_value <= 0:
+                continue
+
+            if pos_value <= remaining_shortfall:
+                sell_qty = pos.qty
+            else:
+                raw_qty = remaining_shortfall / price
+                sell_qty = self._round_qty(raw_qty)
+                if sell_qty <= 0:
+                    continue
+                sell_qty = min(pos.qty, sell_qty)
+
+            if sell_qty <= 0:
+                continue
+
+            decision = self.evaluate_exit(
+                position=pos,
+                price=price,
+                now=now,
+                reason=reason,
+                qty=sell_qty,
+            )
+            decisions.append(decision)
+            remaining_shortfall -= sell_qty * price
+
+        return decisions
+
+    def evaluate_safe_haven_cash_floor_reconstitution(
+        self,
+        account: AccountState,
+        prices: Mapping[str, float],
+        now: datetime,
+    ) -> list[RiskDecision]:
+        """Si le cash réel est inférieur au plancher de retrait, vend du safe haven pour le reconstituer."""
+        self._require_aware(now)
+        floor = self._config.withdrawable_cash_floor_usd
+        if floor <= 0.0 or account.cash >= floor:
+            return []
+        needed_cash = floor - account.cash
+        return self.evaluate_safe_haven_unwind(
+            account,
+            needed_cash=needed_cash,
+            prices=prices,
+            now=now,
+            reason="safe_haven_cash_floor_reconstitution",
+        )
+
+    def evaluate_cash_sweep(
+        self,
+        account: AccountState,
+        prices: Mapping[str, float],
+        now: datetime,
+        *,
+        news: Mapping[str, NewsSignal] | None = None,
+        atrs: Mapping[str, float] | None = None,
+    ) -> list[RiskDecision]:
+        """Alloue l'excédent de cash au-dessus du buffer vers les symboles safe haven.
+
+        Se déclenche à la fin de chaque cycle horaire si safe_haven_enabled est vrai.
+        """
+        self._require_aware(now)
+        if not self._config.safe_haven_enabled or not self._config.safe_haven_symbols:
+            return []
+        if account.halted:
+            return []
+
+        cash_buffer = account.equity * self._config.cash_buffer_pct
+        protected_cash = max(cash_buffer, self._config.withdrawable_cash_floor_usd)
+        excess_cash = max(0.0, account.cash - protected_cash)
+        if excess_cash < self._config.min_order_notional:
+            return []
+
+        current_safe_haven_value = sum(
+            p.market_value
+            for sym, p in account.positions.items()
+            if sym in self._config.safe_haven_symbols and p.qty > 0
+        )
+        max_safe_haven_value = account.equity * self._config.max_safe_haven_total_pct
+        room_safe_haven = max(0.0, max_safe_haven_value - current_safe_haven_value)
+        if room_safe_haven < self._config.min_order_notional:
+            return []
+
+        gross_cap = account.equity * self.effective_gross_cap_pct()
+        gross_remaining = max(0.0, gross_cap - account.gross_exposure)
+        if gross_remaining < self._config.min_order_notional:
+            return []
+
+        sweep_budget = min(
+            excess_cash, room_safe_haven, gross_remaining, account.buying_power
+        )
+        if sweep_budget < self._config.min_order_notional:
+            return []
+
+        eligible_symbols: list[str] = []
+        news_map = news or {}
+        for sym in self._config.safe_haven_symbols:
+            price = prices.get(sym, 0.0)
+            if not math.isfinite(price) or price <= 0:
+                continue
+            sym_news = news_map.get(sym)
+            if sym_news is not None and self.news_vetoes_entry(sym_news):
+                continue
+            eligible_symbols.append(sym)
+
+        if not eligible_symbols:
+            return []
+
+        allocation_per_symbol = sweep_budget / len(eligible_symbols)
+        decisions: list[RiskDecision] = []
+        atrs_map = atrs or {}
+
+        for sym in eligible_symbols:
+            price = prices[sym]
+            raw_qty = allocation_per_symbol / price
+            qty = self._round_qty(raw_qty)
+            notional = qty * price
+            if notional < self._config.min_order_notional:
+                continue
+
+            atr = atrs_map.get(sym, 0.0)
+            stop_price = None
+            if atr > 0:
+                stop_dist = atr * self._config.atr_stop_multiple
+                cand_stop = round(price - stop_dist, 2)
+                if cand_stop > 0:
+                    stop_price = cand_stop
+
+            token = self._mint_token(
+                symbol=sym,
+                side=Side.BUY,
+                qty=qty,
+                now=now,
+            )
+            intent = OrderIntent(
+                symbol=sym,
+                side=Side.BUY,
+                qty=qty,
+                token=token,
+                order_type=OrderType.MARKET,
+                stop_price=stop_price,
+                reason="cash_sweep",
+            )
+            metrics = {
+                "price": price,
+                "qty": qty,
+                "notional": notional,
+                "sweep_budget": sweep_budget,
+                "allocation": allocation_per_symbol,
+            }
+            decisions.append(self._approve(intent, now, metrics))
+
+        return decisions
 
     def evaluate_stop_exit(
         self,
@@ -853,6 +1148,125 @@ class RiskEngine:
             reason="news_panic_exit",
         )
 
+    def evaluate_partial_take_profit(
+        self,
+        position: Position,
+        *,
+        price: float,
+        now: datetime,
+    ) -> RiskDecision | None:
+        """Évalue si une position offensive est éligible au take-profit partiel (+20 %).
+
+        En cas d'éligibilité (plus-value >= config.partial_take_profit_pct et
+        partial_tp_taken est Faux), génère une vente de 50 % des titres
+        (config.partial_take_profit_sell_ratio) avec le motif partial_take_profit.
+        """
+        self._require_aware(now)
+        if self._config.partial_take_profit_pct <= 0:
+            return None
+        if position.partial_tp_taken or position.qty <= 0:
+            return None
+        if position.symbol == "SGOV" or position.symbol in self._config.safe_haven_symbols:
+            return None
+        if not math.isfinite(price) or price <= 0:
+            return None
+
+        unrealized_pct = (price - position.avg_entry_price) / position.avg_entry_price
+        if unrealized_pct < self._config.partial_take_profit_pct - 1e-9:
+            return None
+
+        sell_ratio = min(1.0, max(0.01, self._config.partial_take_profit_sell_ratio))
+        raw_qty = position.qty * sell_ratio
+        sell_qty = self._round_qty(raw_qty)
+        if sell_qty <= 0 or sell_qty >= position.qty:
+            return None
+        if sell_qty * price < self._config.min_order_notional:
+            return None
+
+        return self.evaluate_exit(
+            position=position,
+            price=price,
+            now=now,
+            reason="partial_take_profit",
+            qty=sell_qty,
+        )
+
+    def evaluate_overweight_trim(
+        self,
+        position: Position,
+        *,
+        price: float,
+        account: AccountState,
+        now: datetime,
+    ) -> RiskDecision | None:
+        """Écréme l'excédent d'une position dépassant le plafond de poids max (25 %).
+
+        Ramène la position à la taille cible (effective_position_cap_pct, 20 %).
+        """
+        self._require_aware(now)
+        if self._config.max_single_position_weight <= 0:
+            return None
+        if account.equity <= 0 or position.qty <= 0 or price <= 0:
+            return None
+        if position.symbol == "SGOV" or position.symbol in self._config.safe_haven_symbols:
+            return None
+        if not math.isfinite(price) or price <= 0:
+            return None
+
+        current_val = position.qty * price
+        weight = current_val / account.equity
+        if weight <= self._config.max_single_position_weight + 1e-9:
+            return None
+
+        target_cap = self.effective_position_cap_pct()
+        target_val = account.equity * target_cap
+        excess_val = current_val - target_val
+        if excess_val <= 0:
+            return None
+
+        raw_qty = excess_val / price
+        sell_qty = self._round_qty(raw_qty)
+        if sell_qty <= 0 or sell_qty >= position.qty:
+            return None
+        if sell_qty * price < self._config.min_order_notional:
+            return None
+
+        return self.evaluate_exit(
+            position=position,
+            price=price,
+            now=now,
+            reason="position_trim_overweight",
+            qty=sell_qty,
+        )
+
+    def evaluate_manual_withdrawal(
+        self,
+        position: Position,
+        *,
+        price: float,
+        qty: float,
+        now: datetime,
+        reason: str = "manual_withdrawal",
+    ) -> RiskDecision:
+        """Autorise et scelle un ordre de vente pour un retrait manuel de cash."""
+        self._require_aware(now)
+        if qty <= 0 or not math.isfinite(qty):
+            raise RiskError(f"quantité de retrait invalide : {qty}")
+        if price <= 0 or not math.isfinite(price):
+            raise RiskError(f"prix invalide : {price}")
+
+        sell_qty = min(position.qty, self._round_qty(qty))
+        if sell_qty <= 0:
+            raise RiskError("quantité de retrait arrondie à zéro")
+
+        return self.evaluate_exit(
+            position=position,
+            price=price,
+            now=now,
+            reason=reason,
+            qty=sell_qty,
+        )
+
     def evaluate_stop_replace(
         self,
         position: Position,
@@ -914,6 +1328,8 @@ class RiskEngine:
         barre suivante : l'appelant l'applique après la clôture, jamais avant.
         """
         config = self._config
+        if position.symbol == "SGOV" or position.symbol in config.safe_haven_symbols:
+            return None
         if config.trailing_atr_multiple <= 0.0:
             return None
         if position.stop_price is None or position.initial_stop_price is None:

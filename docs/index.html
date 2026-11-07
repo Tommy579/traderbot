@@ -77,6 +77,16 @@
             background: color-mix(in srgb, var(--bad) 8%, var(--surface)); }
   .banner b { color: var(--bad); }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 10px; }
+
+  @media (max-width: 520px) {
+    .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .tile .value { font-size: 18px; }
+    .tile .label { font-size: 11px; }
+    /* Première colonne figée : le symbole reste visible quand on fait défiler le tableau. */
+    .table-wrap th:first-child, .table-wrap td:first-child {
+      position: sticky; left: 0; background: var(--surface-1, var(--surface, var(--plane))); z-index: 1;
+    }
+  }
   .tile { background: var(--plane); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; }
   .tile .label { color: var(--ink-2); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
   .tile .value { font-size: 19px; font-weight: 650; margin-top: 2px; }
@@ -91,6 +101,30 @@
   code { background: var(--plane); border: 1px solid var(--border); border-radius: 6px;
          padding: 1px 5px; font-size: 13px; word-break: break-all; }
   .err { color: var(--bad); }
+  .cycle-subdivision {
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 10px 12px;
+    margin-top: 10px;
+    background: var(--plane);
+  }
+  .cycle-subdivision:first-child { margin-top: 6px; }
+  .cycle-subdivision-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px dashed var(--border);
+  }
+  .cycle-time {
+    font-weight: 700;
+    font-size: 13.5px;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
   button { border-radius: 9px; padding: 10px 16px; font-size: 15px; cursor: pointer;
            border: 1px solid var(--ink); background: var(--ink); color: var(--plane);
            font-weight: 600; }
@@ -332,7 +366,10 @@ function updateAccountCard(entries) {
   card.style.display = "block";
   currentReport = r;
   if (r.session_date) {
-    $("#account-hint").textContent = "Dernier cycle exécuté le " + frDate(r.session_date) + " (valeurs en dollars fictifs).";
+    const timeRaw = r.timestamp || (entries.length ? entries[0].received_at : null);
+    const timeStr = timeRaw ? " à " + new Date(timeRaw).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "";
+    const modeLabel = r.mode === "watch_only" ? " (vigie horaire)" : " (cycle complet)";
+    $("#account-hint").textContent = "Dernier cycle exécuté le " + frDate(r.session_date) + timeStr + modeLabel + " (valeurs en dollars fictifs).";
   }
   recalculateAndRenderPositions();
 }
@@ -345,62 +382,106 @@ function render(entries) {
       Le bot envoie ses stats à la fin de chaque cycle.</p></div>`;
     return;
   }
-  const orderedEntries = entries.slice().reverse();
-  list.innerHTML = orderedEntries.map((entry) => {
+
+  // Regroupement par séance de marché (du plus récent au plus ancien)
+  const sessions = new Map();
+  for (const entry of entries) {
     const r = entry.report || {};
-    const badges = [];
-    if (r.skipped) {
-      badges.push(`<span class="badge hold">Ignoré</span>`);
-    } else {
-      badges.push(`<span class="badge ok">Cycle exécuté</span>`);
+    const sDate = r.session_date || "date-inconnue";
+    if (!sessions.has(sDate)) sessions.set(sDate, []);
+    sessions.get(sDate).push(entry);
+  }
+
+  const sessionDates = Array.from(sessions.keys()).reverse();
+  list.innerHTML = sessionDates.map((sDate) => {
+    const dayEntries = sessions.get(sDate);
+    // Au sein de la journée, tri chronologique de l'ouverture à la clôture
+    const sortedDay = dayEntries.slice().sort((a, b) => {
+      const ta = (a.report && a.report.timestamp) || a.received_at || "";
+      const tb = (b.report && b.report.timestamp) || b.received_at || "";
+      return ta.localeCompare(tb);
+    });
+
+    const vigies = sortedDay.filter((e) => (e.report && e.report.mode) === "watch_only").length;
+    const complets = sortedDay.length - vigies;
+    const summaryBadges = [];
+    if (vigies > 0) summaryBadges.push(`<span class="badge hold">${vigies} vigie(s)</span>`);
+    if (complets > 0) summaryBadges.push(`<span class="badge ok">${complets} complet</span>`);
+
+    const lastRep = (sortedDay[sortedDay.length - 1].report) || {};
+    if (lastRep.equity != null) {
+      summaryBadges.push(`<span class="badge ok">Solde : ${money(lastRep.equity)}</span>`);
     }
-    if (r.dry_run) badges.push(`<span class="badge warn">Répétition</span>`);
 
-    const signals = Object.entries(r.signals || {});
-    const orders = r.orders || [];
-    const approved = (r.decisions || []).filter((d) => d.approved);
-    const halts = r.halts || [];
-    const errors = r.errors || [];
-    const lines = [];
+    const subdivisionsHtml = sortedDay.map((entry) => {
+      const r = entry.report || {};
+      const isWatch = r.mode === "watch_only";
+      const timeRaw = r.timestamp || entry.received_at;
+      const timeStr = timeRaw ? new Date(timeRaw).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "";
 
-    if (r.skipped) {
-      lines.push(`<p class="small">Le robot s'est réveillé mais n'a rien fait :
-        ${esc(r.skip_reason || "séance non ouverte")}.</p>`);
-    } else {
-      lines.push(`<p class="small">Valeur du compte : <b>${money(r.equity)}</b></p>`);
-      if (signals.length) {
-        lines.push(`<p class="small">${signals.map(([s, a]) =>
-          `<span class="badge ${a === "BUY" ? "buy" : a === "SELL" ? "sell" : "hold"}">${esc(s)} ${esc(a)}</span>`
-        ).join(" ")}</p>`);
-      }
-      if (orders.length) {
-        lines.push(`<table><thead><tr><th>Ordre</th><th class="num">Qté</th><th class="num">Prix</th></tr></thead><tbody>${
-          orders.map((o) => `<tr><td><b>${esc(o.symbol)}</b> ${esc(sideLabel(o.side))}</td>
-            <td class="num">${esc(o.qty)}</td>
-            <td class="num">${o.avg_fill_price ? money(o.avg_fill_price) : esc(o.status)}</td></tr>`).join("")
-        }</tbody></table>`);
+      const badges = [];
+      badges.push(`<span class="badge ${isWatch ? "hold" : "ok"}">${isWatch ? "Vigie horaire" : "Cycle complet"}</span>`);
+      if (r.skipped) badges.push(`<span class="badge hold">Ignoré</span>`);
+      if (r.dry_run) badges.push(`<span class="badge warn">Répétition</span>`);
+
+      const signals = Object.entries(r.signals || {});
+      const orders = r.orders || [];
+      const approved = (r.decisions || []).filter((d) => d.approved);
+      const halts = r.halts || [];
+      const errors = r.errors || [];
+      const lines = [];
+
+      if (r.skipped) {
+        lines.push(`<p class="small">Ignoré : ${esc(r.skip_reason || "séance non ouverte")}.</p>`);
       } else {
-        lines.push(`<p class="small">Aucun ordre transmis ce jour-là.</p>`);
+        lines.push(`<p class="small">Valeur à ce passage : <b>${money(r.equity)}</b> (cash : ${money(r.cash)})</p>`);
+        if (isWatch && !orders.length) {
+          lines.push(`<p class="small" style="color:var(--muted)">Surveillance en direct : stops ATR et actualités critiques vérifiés, positions saines.</p>`);
+        }
+        if (signals.length) {
+          lines.push(`<p class="small">${signals.map(([s, a]) =>
+            `<span class="badge ${a === "BUY" ? "buy" : a === "SELL" ? "sell" : "hold"}">${esc(s)} ${esc(a)}</span>`
+          ).join(" ")}</p>`);
+        }
+        if (orders.length) {
+          lines.push(`<table><thead><tr><th>Ordre</th><th class="num">Qté</th><th class="num">Prix</th></tr></thead><tbody>${
+            orders.map((o) => `<tr><td><b>${esc(o.symbol)}</b> ${esc(sideLabel(o.side))}</td>
+              <td class="num">${esc(o.qty)}</td>
+              <td class="num">${o.avg_fill_price ? money(o.avg_fill_price) : esc(o.status)}</td></tr>`).join("")
+          }</tbody></table>`);
+        } else if (!isWatch) {
+          lines.push(`<p class="small">Aucun ordre transmis sur ce cycle.</p>`);
+        }
+        if (approved.length) {
+          lines.push(`<p class="small">Filets posés : ${approved.filter((d) => d.stop_price)
+            .map((d) => `${esc(d.symbol)} à ${money(d.stop_price)}`).join(", ") || "—"}</p>`);
+        }
       }
-      if (approved.length) {
-        lines.push(`<p class="small">Filets posés : ${approved.filter((d) => d.stop_price)
-          .map((d) => `${esc(d.symbol)} à ${money(d.stop_price)}`).join(", ") || "—"}</p>`);
+      if (halts.length) {
+        lines.push(`<div class="banner"><b>Coupe-circuit :</b> ${halts.map((h) => esc(h.reason)).join(" ; ")}</div>`);
       }
-    }
-    if (halts.length) {
-      lines.push(`<div class="banner"><b>Coupe-circuit :</b> ${halts.map((h) =>
-        esc(h.reason)).join(" ; ")}</div>`);
-    }
-    if (errors.length) {
-      lines.push(`<div class="banner"><b>Alertes :</b> ${errors.map(esc).join(" ; ")}</div>`);
-    }
+      if (errors.length) {
+        lines.push(`<div class="banner"><b>Alertes :</b> ${errors.map(esc).join(" ; ")}</div>`);
+      }
+
+      return `<div class="cycle-subdivision">
+        <div class="cycle-subdivision-header">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span class="cycle-time">${esc(timeStr || "—")}</span>
+            ${badges.join(" ")}
+          </div>
+          <div style="font-weight:600;font-size:13.5px">${money(r.equity)}</div>
+        </div>
+        ${lines.join("")}
+      </div>`;
+    }).join("");
 
     return `<div class="card">
       <div class="top">
-        <h2>${esc(frDate(r.session_date))}</h2>
-        <div>${badges.join(" ")}</div>
+        <h2>${esc(frDate(sDate))}</h2>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">${summaryBadges.join(" ")}</div>
       </div>
-      ${lines.join("")}
+      ${subdivisionsHtml}
     </div>`;
   }).join("");
 }

@@ -4,10 +4,11 @@
 #   ./deploy/install.sh          # installe puis active le timer
 #   ./deploy/install.sh --status # affiche l'etat du timer et du service
 #
-# Le service exécute `live --once` a 15:55 America/New_York chaque jour ouvrable.
+# Le service exécute `live --once` a 15:55 America/New_York (cycle complet)
+# et `live --watch-only` de 10:00 a 15:00 America/New_York (vigie horaire).
 # Desinstallation :
-#   systemctl --user disable --now tradingbot.timer
-#   rm ~/.config/systemd/user/tradingbot.{service,timer}
+#   systemctl --user disable --now tradingbot.timer tradingbot-watch.timer
+#   rm ~/.config/systemd/user/tradingbot.{service,timer} ~/.config/systemd/user/tradingbot-watch.{service,timer}
 
 set -euo pipefail
 
@@ -21,8 +22,8 @@ if [[ ! -x "${PROJECT_DIR}/.venv/bin/python" ]]; then
 fi
 
 if [[ "${1:-}" == "--status" ]]; then
-    systemctl --user list-timers tradingbot.timer || true
-    systemctl --user status tradingbot.service || true
+    systemctl --user list-timers "tradingbot*.timer" || true
+    systemctl --user status tradingbot.service tradingbot-watch.service || true
     exit 0
 fi
 
@@ -34,17 +35,19 @@ if [[ "${1:-}" == "--strategy" && -n "${2:-}" ]]; then
 fi
 
 mkdir -p "${UNIT_DIR}"
-for unit in tradingbot.service tradingbot.timer; do
+for unit in tradingbot.service tradingbot.timer tradingbot-watch.service tradingbot-watch.timer; do
     sed -e "s|@PROJECT_DIR@|${PROJECT_DIR}|g" \
         -e "s|live --once|live --once --strategy ${STRATEGY}|" \
         "${PROJECT_DIR}/deploy/${unit}" > "${UNIT_DIR}/${unit}"
 done
 
 systemctl --user daemon-reload
-systemctl --user enable --now tradingbot.timer
+systemctl --user enable --now tradingbot.timer tradingbot-watch.timer
 
-echo "Timer installe et active :"
-systemctl --user list-timers tradingbot.timer
+echo "Timers installes et actives :"
+systemctl --user list-timers "tradingbot*.timer"
 echo ""
-echo "Prochaine exécution ci-dessus (15:55 America/New_York, jours ouvrables)."
-echo "Journal des cycles : journalctl --user -u tradingbot.service -f"
+echo "Double vitesse configuree :"
+echo "  - Vigie horaire   : 10:00 a 15:00 America/New_York (16:00 a 21:00 Paris)"
+echo "  - Cycle complet   : 15:55 America/New_York (21:55 Paris)"
+echo "Journal des cycles : journalctl --user -u tradingbot.service -u tradingbot-watch.service -f"

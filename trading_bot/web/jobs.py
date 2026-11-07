@@ -13,9 +13,11 @@ import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Final
+
+from trading_bot.clock import get_online_now
 
 _MAX_JOBS: Final[int] = 20
 
@@ -38,7 +40,7 @@ class Job:
     status: JobStatus = JobStatus.RUNNING
     result: dict[str, Any] | None = None
     error: str | None = None
-    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    started_at: datetime = field(default_factory=get_online_now)
 
     def snapshot(self) -> dict[str, Any]:
         """Vue JSON-compatible pour l'interface."""
