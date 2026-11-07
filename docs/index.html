@@ -202,7 +202,7 @@
 
 <dialog id="modal-alpaca">
   <h3 style="margin: 0 0 6px; font-size: 16px;">Connexion directe Alpaca (IEX)</h3>
-  <p class="small" style="margin: 0 0 12px;">Ces identifiants sont stockés <b>uniquement dans votre navigateur</b> (localStorage privé). Ils ne sont jamais envoyés à GitHub.</p>
+  <p class="small" style="margin: 0 0 12px;">Ces identifiants restent dans votre navigateur, <b>pour cette session seulement</b> (effacés à la fermeture de l'onglet). Ils ne sont jamais envoyés à GitHub. Cette page partage son origine avec vos autres projets GitHub Pages : n'y collez que des clés <b>paper</b>.</p>
   <label class="small" style="font-weight: 600; display: block;">Clé API Alpaca (APCA-API-KEY-ID)</label>
   <input id="input-alpaca-key" class="dialog-input" type="text" placeholder="PK...">
   <label class="small" style="font-weight: 600; display: block;">Clé secrète Alpaca (APCA-API-SECRET-KEY)</label>
@@ -409,7 +409,8 @@ function render(entries) {
     if (complets > 0) summaryBadges.push(`<span class="badge ok">${complets} complet</span>`);
 
     const lastRep = (sortedDay[sortedDay.length - 1].report) || {};
-    if (lastRep.equity != null) {
+    // Un cycle ignoré (week-end, marché fermé) remonte un solde à 0 : ne pas l'afficher.
+    if (lastRep.equity) {
       summaryBadges.push(`<span class="badge ok">Solde : ${money(lastRep.equity)}</span>`);
     }
 
@@ -494,7 +495,8 @@ async function load() {
     const data = await res.json();
     const entries = data.entries || [];
     render(entries);
-    const last = entries.length ? entries[0].received_at : null;
+    // Les entrées sont stockées dans l'ordre chronologique : le dernier cycle est la date max.
+    const last = entries.reduce((m, e) => (e.received_at && e.received_at > m ? e.received_at : m), "") || null;
     const parts = [entries.length + " cycle(s) enregistré(s)"];
     if (last) parts.push("dernier cycle : " + new Date(last).toLocaleString("fr-FR"));
     if (data.updated_at) parts.push("fichier mis à jour le " + new Date(data.updated_at).toLocaleString("fr-FR"));
@@ -538,8 +540,8 @@ async function pollQuotesOnce() {
 }
 
 async function refreshAlpacaSnapshot() {
-  const key = (localStorage.getItem("alpaca_key") || "").trim();
-  const secret = (localStorage.getItem("alpaca_secret") || "").trim();
+  const key = (sessionStorage.getItem("alpaca_key") || "").trim();
+  const secret = (sessionStorage.getItem("alpaca_secret") || "").trim();
   if (!key || !secret) {
     await pollQuotesOnce();
     recalculateAndRenderPositions();
@@ -617,8 +619,8 @@ function connectAlpacaWs(symbols) {
     try { alpacaWs.close(); } catch (_) {}
     alpacaWs = null;
   }
-  const key = (localStorage.getItem("alpaca_key") || "").trim();
-  const secret = (localStorage.getItem("alpaca_secret") || "").trim();
+  const key = (sessionStorage.getItem("alpaca_key") || "").trim();
+  const secret = (sessionStorage.getItem("alpaca_secret") || "").trim();
   if (!key || !secret || !symbols || !symbols.length) return false;
 
   try {
@@ -721,8 +723,8 @@ $("#toggle-live").addEventListener("click", () => {
 
 const modalAlpaca = $("#modal-alpaca");
 $("#btn-open-alpaca").addEventListener("click", () => {
-  $("#input-alpaca-key").value = localStorage.getItem("alpaca_key") || "";
-  $("#input-alpaca-secret").value = localStorage.getItem("alpaca_secret") || "";
+  $("#input-alpaca-key").value = sessionStorage.getItem("alpaca_key") || "";
+  $("#input-alpaca-secret").value = sessionStorage.getItem("alpaca_secret") || "";
   modalAlpaca.showModal();
 });
 
@@ -731,8 +733,8 @@ $("#btn-alpaca-close").addEventListener("click", () => {
 });
 
 $("#btn-alpaca-clear").addEventListener("click", () => {
-  localStorage.removeItem("alpaca_key");
-  localStorage.removeItem("alpaca_secret");
+  sessionStorage.removeItem("alpaca_key");
+  sessionStorage.removeItem("alpaca_secret");
   $("#input-alpaca-key").value = "";
   $("#input-alpaca-secret").value = "";
   if (alpacaWs) {
@@ -747,8 +749,8 @@ $("#btn-alpaca-save").addEventListener("click", () => {
   const key = $("#input-alpaca-key").value.trim();
   const secret = $("#input-alpaca-secret").value.trim();
   if (key && secret) {
-    localStorage.setItem("alpaca_key", key);
-    localStorage.setItem("alpaca_secret", secret);
+    sessionStorage.setItem("alpaca_key", key);
+    sessionStorage.setItem("alpaca_secret", secret);
     $("#live-status-note").textContent = "Cotations : identifiants Alpaca enregistrés.";
     if (liveActive) {
       const symbols = (currentReport && currentReport.positions ? currentReport.positions.map((p) => p.symbol) : []);
