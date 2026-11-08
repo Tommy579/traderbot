@@ -8,7 +8,8 @@
 <link rel="alternate icon" href="/favicon.ico">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#111110">
+<meta name="theme-color" content="#f2f6f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#071012" media="(prefers-color-scheme: dark)">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -96,7 +97,7 @@
     <div class="card">
       <h2>Diagnostic du jour</h2>
       <p class="hint">Demande au robot ce qu'il ferait maintenant, sans rien acheter ni vendre.</p>
-      <div class="row" style="align-items:end">
+      <div class="row row-end">
         <div>
           <label for="check-strategy">Stratégie (méthode de décision)</label>
           <select id="check-strategy"></select>
@@ -137,7 +138,7 @@
       <p class="hint">On simule ce que la stratégie aurait fait sur les années passées, frais compris. Le passé ne garantit jamais le futur — c'est un indicateur, pas une promesse.</p>
       <span class="field-label" id="bt-strategy-label">Méthode à tester</span>
       <div class="strategy-cards" id="bt-strategies" role="radiogroup" aria-labelledby="bt-strategy-label"></div>
-      <div class="row" style="margin-top:6px">
+      <div class="row hint-tight">
         <div>
           <label for="bt-symbols">Symboles (actions à tester, séparées par des virgules)</label>
           <input id="bt-symbols" placeholder="AAPL, MSFT, NVDA, GOOGL, AMZN, META">
@@ -160,12 +161,12 @@
     <div class="card">
       <h2>Laisser le robot travailler tout seul (double vitesse)</h2>
       <p class="hint">Une fois activé, il tourne à double vitesse pendant la séance US : vigie horaire (10h à 15h New York / 16h à 21h Paris) pour surveiller stops et alertes news en continu, puis cycle complet à <b>15 h 55, heure de New York</b> (21 h 55 Paris) pour évaluer les signaux journaliers 1Day, exécuter les ordres et ajuster la poche de repli.</p>
-      <div class="row" style="align-items:end">
+      <div class="row row-end">
         <div>
           <label for="auto-strategy">Stratégie utilisée chaque jour</label>
           <select id="auto-strategy"></select>
         </div>
-        <div style="flex:0">
+        <div class="amount-fixed">
           <button class="primary" id="btn-automation" type="button">Activer / mettre à jour</button>
         </div>
       </div>
@@ -187,54 +188,54 @@
       <h2>Retirer de l'argent et sanctuariser du cash</h2>
       <p class="hint">Dégagez des liquidités immédiatement en vendant une portion d'action, ou sécurisez un montant de cash total qui ne sera plus jamais réinvesti par le robot (sanctuarisation dans .env).</p>
 
-      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:16px;margin-top:14px">
+      <div class="withdraw-grid">
         <!-- Option 1 : Retrait par action -->
         <div class="subcard">
-          <h3 style="margin-top:0;font-size:15px">Retrait sur une action détenue</h3>
+          <h3>Retrait sur une action détenue</h3>
           <p class="small hint">Vendre une partie ou la totalité d'une ligne pour récupérer le cash.</p>
           <label for="withdraw-symbol">Action</label>
           <select id="withdraw-symbol">
             <option value="">Sélectionner une action…</option>
           </select>
-          <div style="display:flex;gap:10px;margin-top:8px">
-            <div style="flex:1">
+          <div class="amount-row">
+            <div>
               <label for="withdraw-amount">Montant ($)</label>
               <input id="withdraw-amount" type="number" step="any" min="0" placeholder="Ex: 500">
             </div>
-            <div style="flex:1">
+            <div>
               <label for="withdraw-pct">ou Pourcentage (%)</label>
               <input id="withdraw-pct" type="number" step="1" min="1" max="100" placeholder="Ex: 50">
             </div>
           </div>
-          <div class="actions" style="margin-top:12px">
+          <div class="actions">
             <button class="secondary" id="btn-withdraw-pos" type="button">Retirer sur cette ligne</button>
           </div>
         </div>
 
         <!-- Option 2 : Sanctuarisation globale de cash -->
         <div class="subcard">
-          <h3 style="margin-top:0;font-size:15px">Dégager et sanctuariser du cash libre</h3>
+          <h3>Dégager et sanctuariser du cash libre</h3>
           <p class="small hint">Vend en priorité les replis défensifs puis les offensifs gagnants, et fixe le plancher dans <code>.env</code>.</p>
           <label for="withdraw-free-cash">Montant de cash cible ($)</label>
           <input id="withdraw-free-cash" type="number" step="any" min="0" placeholder="Ex: 1000">
-          <div class="actions" style="margin-top:12px">
+          <div class="actions">
             <button class="secondary" id="btn-withdraw-free" type="button">Dégager et sanctuariser</button>
           </div>
         </div>
 
         <!-- Option 3 : mouvement de cash fait chez le courtier -->
         <div class="subcard">
-          <h3 style="margin-top:0;font-size:15px">Dépôt ou retrait fait chez Alpaca</h3>
+          <h3>Dépôt ou retrait fait chez Alpaca</h3>
           <p class="small hint">Si vous avez bougé de l'argent depuis votre compte Alpaca, recalez la référence : sinon la baisse est lue comme une perte et le robot s'arrête définitivement.</p>
-          <label>Ce que vous avez fait</label>
+          <label for="rebase-reason">Ce que vous avez fait</label>
           <input id="rebase-reason" type="text" placeholder="Ex: retrait de 5 000 $ vers mon compte">
-          <div class="actions" style="margin-top:12px">
+          <div class="actions">
             <button class="secondary" id="btn-rebase">Recaler la référence</button>
           </div>
         </div>
       </div>
       <div class="msg" id="withdraw-msg" role="status" aria-live="polite"></div>
-      <div id="withdraw-result" style="margin-top:10px" aria-live="polite"></div>
+      <div id="withdraw-result" aria-live="polite"></div>
     </div>
   </section>
 
@@ -251,25 +252,25 @@
     <div class="card">
       <h2>Planchers de sécurité et cash sanctuarisé</h2>
       <p class="hint">Définissez les seuils de préservation du capital et de sanctuarisation de trésorerie.</p>
-      <div style="display:flex;gap:12px;flex-wrap:wrap">
-        <div style="flex:1;min-width:220px">
+      <div class="duo">
+        <div>
           <label for="set-cash-floor">Plancher de cash retirable sanctuarisé ($)</label>
           <input id="set-cash-floor" type="number" step="any" min="0" placeholder="Ex: 5000">
-          <p class="small hint" style="margin-top:4px">Montant minimal toujours gardé en cash pur, jamais investi.</p>
+          <p class="small hint hint-xs">Montant minimal toujours gardé en cash pur, jamais investi.</p>
         </div>
-        <div style="flex:1;min-width:220px">
+        <div>
           <label for="set-equity-floor">Plancher dur de sécurité totale ($)</label>
           <input id="set-equity-floor" type="number" step="any" min="0" placeholder="Ex: 80000">
-          <p class="small hint" style="margin-top:4px">Si l'équité totale tombe sous ce seuil, le robot liquide tout en cash et s'arrête.</p>
+          <p class="small hint hint-xs">Si l'équité totale tombe sous ce seuil, le robot liquide tout en cash et s'arrête.</p>
         </div>
       </div>
     </div>
     <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <h2 style="margin:0">Recevoir un message après chaque cycle</h2>
+      <div class="between">
+        <h2 class="h2-flush">Recevoir un message après chaque cycle</h2>
         <span id="webhook-badge" class="badge">Inactif</span>
       </div>
-      <p class="hint" style="margin-top:6px">Le robot peut vous écrire sur Discord ou Telegram à la fin de chaque journée de trading.</p>
+      <p class="hint hint-tight">Le robot peut vous écrire sur Discord ou Telegram à la fin de chaque journée de trading.</p>
       <label for="set-webhook-format">Plateforme</label>
       <select id="set-webhook-format">
         <option value="discord">Discord</option>
@@ -282,7 +283,7 @@
       <input id="set-webhook-chat" placeholder="123456789">
       <label for="set-webhook-token">Jeton secret — indispensable pour un site de stats public</label>
       <input id="set-webhook-token" type="password" autocomplete="new-password" placeholder="obligatoire si l'adresse n'est ni Discord ni Telegram">
-      <p class="hint" style="margin-top:4px">Sans ce jeton, une adresse publique connue permettrait à n'importe qui d'injecter de fausses statistiques. Laissez le champ vide pour <b>conserver</b> le jeton déjà enregistré : il n'est jamais réaffiché.</p>
+      <p class="hint hint-xs">Sans ce jeton, une adresse publique connue permettrait à n'importe qui d'injecter de fausses statistiques. Laissez le champ vide pour <b>conserver</b> le jeton déjà enregistré : il n'est jamais réaffiché.</p>
       <div class="actions">
         <button class="primary" id="btn-settings" type="button">Enregistrer les réglages</button>
       </div>
