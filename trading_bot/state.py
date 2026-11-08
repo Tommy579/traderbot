@@ -83,11 +83,12 @@ class StateStore:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, self._path)
-        directory = os.open(self._path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if os.name != "nt":
+            directory = os.open(self._path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
 
 
 class AuditLog:

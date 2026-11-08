@@ -865,6 +865,21 @@ def test_withdraw_endpoints_and_floors(settings, web_bars) -> None:
         fresh = Settings(_env_file=str(context.env_path))
         assert fresh.risk.withdrawable_cash_floor_usd == 3000.0
         assert fresh.risk.equity_hard_floor_usd == 50000.0
+
+        # 4. Retrait asynchrone via JobManager (utilisé par l'interface web)
+        code, payload = request(
+            port,
+            "/api/withdraw",
+            method="POST",
+            body={"symbol": "AAPL", "pct": 25.0, "async": True},
+        )
+        assert code == 200 and payload["ok"] is True
+        assert "job" in payload
+        snapshot = wait_job(port, payload["job"]["id"])
+        assert snapshot["status"] == "done"
+        assert snapshot["result"]["ok"] is True
+        assert len(snapshot["result"]["orders"]) == 1
+        assert snapshot["result"]["orders"][0]["qty"] == 5.0
     finally:
         httpd.shutdown()
 
@@ -953,3 +968,66 @@ def test_rebase_endpoint_requires_a_reason(settings, web_bars) -> None:
     context = make_context(settings, web_bars)
     with pytest.raises(ValueError, match="Expliquez"):
         _rebase(context, {"reason": "   "})
+
+
+def test_withdraw_concurrency_guard_when_cycle_locked(settings, web_bars) -> None:
+    """Un retrait refuse immédiatement si cycle_lock est déjà pris."""
+    from trading_bot.web.app import _run_withdraw
+
+    context = make_context(settings, web_bars)
+    with context.cycle_lock, pytest.raises(ValueError, match="déjà en cours"):
+        _run_withdraw(context, {"symbol": "AAPL", "pct": 50.0})
+
+
+def test_interface_assets_are_served(settings, web_bars) -> None:
+    """La page ne contient plus ni CSS ni JS : les deux fichiers sont servis."""
+    httpd, port = start_server(make_context(settings, web_bars))
+    try:
+        req_css = urllib.request.Request(f"http://127.0.0.1:{port}/app.css")
+        with urllib.request.urlopen(req_css, timeout=10) as resp:
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type", "").startswith("text/css")
+            css = resp.read().decode()
+        assert ".status-pill" in css and ".skip-link" in css
+
+        req_js = urllib.request.Request(f"http://127.0.0.1:{port}/app.js")
+        with urllib.request.urlopen(req_js, timeout=10) as resp:
+            assert resp.status == 200
+            assert "javascript" in resp.headers.get("Content-Type", "")
+            script = resp.read().decode()
+        assert "renderSummary" in script and "activateTab" in script
+
+        req_page = urllib.request.Request(f"http://127.0.0.1:{port}/")
+        with urllib.request.urlopen(req_page, timeout=10) as resp:
+            page = resp.read().decode()
+        assert 'href="/app.css"' in page
+        assert 'src="/app.js"' in page
+        assert "<style>" not in page
+        # Repères d'accessibilité de base.
+        assert 'role="tablist"' in page and 'aria-live="polite"' in page
+    finally:
+        httpd.shutdown()
+
+
+def test_status_exposes_last_cycle(settings, web_bars) -> None:
+    """La synthèse du tableau de bord lit le dernier cycle depuis /api/status."""
+    context = make_context(settings, web_bars)
+    httpd, port = start_server(context)
+    try:
+        _code, payload = request(port, "/api/status")
+        assert payload["last_cycle"] is None
+
+        HistoryStore(settings.state_dir / "history.jsonl").record(
+            {
+                "session_date": "2026-10-31",
+                "skipped": False,
+                "equity": 102_500.0,
+                "mode": "full",
+            },
+            source="timer",
+        )
+        _code, payload = request(port, "/api/status")
+        assert payload["last_cycle"]["session_date"] == "2026-10-31"
+        assert payload["last_cycle"]["equity"] == pytest.approx(102_500.0)
+    finally:
+        httpd.shutdown()

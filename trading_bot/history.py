@@ -12,19 +12,26 @@ lecture-modification-écriture est donc protégé par un verrou ``flock``.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
+import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, TextIO
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows n'expose pas fcntl
+    fcntl = None  # type: ignore[assignment]
+
 from trading_bot.clock import get_online_now
 
 _MAX_ENTRIES: Final[int] = 400
 """Enregistrements conservés : environ un an et demi de séances."""
+
+_THREAD_LOCK = threading.Lock()
 
 
 def _utc_now() -> datetime:
@@ -133,16 +140,19 @@ class HistoryStore:
     def _locked(self) -> Iterator[TextIO]:
         """Ouvre le fichier en lecture/écriture sous verrou inter-processus."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self._path.open("a+", encoding="utf-8")
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            handle.seek(0)
-            yield handle
-        finally:
+        with _THREAD_LOCK:
+            handle = self._path.open("a+", encoding="utf-8")
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                handle.seek(0)
+                yield handle
             finally:
-                handle.close()
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                finally:
+                    handle.close()
 
     @staticmethod
     def _parse(text: str) -> list[dict[str, Any]]:

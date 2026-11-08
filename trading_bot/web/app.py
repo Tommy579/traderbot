@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -247,6 +248,9 @@ def _compute_automation_view() -> dict[str, Any]:
         match = re.search(r"--strategy (\S+)", _UNIT_SERVICE.read_text(encoding="utf-8"))
         if match:
             view["strategy"] = match.group(1)
+
+    if shutil.which("systemctl") is None:
+        return view
 
     for timer_unit, active_key in [
         ("tradingbot.timer", "timer_active"),
@@ -727,8 +731,13 @@ def _run_withdraw(
     Toute la mécanique (annulation vérifiée des stops, validation par le moteur
     de risque, audit, plancher de cash) vit dans ``trading_bot.withdrawal`` :
     l'interface ne fait que traduire le formulaire et le résultat.
+
+    Le verrou est pris sans attendre : si un cycle tourne déjà, l'utilisateur
+    reçoit un refus immédiat plutôt qu'une requête HTTP figée.
     """
-    with context.cycle_lock:
+    if not context.cycle_lock.acquire(blocking=False):
+        raise ValueError("Un cycle ou un retrait est déjà en cours d'exécution.")
+    try:
         settings = _refresh_settings(context)
         broker = context.broker_factory(settings)
         service = WithdrawalService(
@@ -778,6 +787,8 @@ def _run_withdraw(
             f"(~{fill.cash_freed:.2f} $ dégagés)."
         )
         return payload
+    finally:
+        context.cycle_lock.release()
 
 
 def _reset_permanent_halt(
@@ -849,6 +860,12 @@ def _install_automation(
     strategy = str(request.get("strategy") or "ema_cross")
     if not context.install_script.exists():
         raise ValueError(f"Script d'installation introuvable : {context.install_script}")
+    if shutil.which("systemctl") is None or shutil.which("bash") is None:
+        raise ValueError(
+            "Le pilotage automatique par service systemd nécessite un environnement "
+            "Linux (avec bash et systemctl). Sur Windows, utilisez les boutons de "
+            "lancement manuel ci-dessous ou le Planificateur de tâches."
+        )
     command = ["bash", str(context.install_script)]
     if strategy != "ema_cross":
         command += ["--strategy", strategy]
@@ -975,6 +992,10 @@ def _status_payload(context: WebContext) -> dict[str, Any]:
         "day_start_equity": state.day_start_equity,
         "peak_equity": state.peak_equity,
     }
+    # Dernier cycle connu : permet à la synthèse du tableau de bord de dater
+    # l'activité du robot sans imposer un second appel à /api/history.
+    latest = _history_entries(context, limit=1)
+    payload["last_cycle"] = latest[0] if latest else None
     return payload
 
 
@@ -1048,6 +1069,9 @@ def build_handler(context: WebContext) -> type[BaseHTTPRequestHandler]:
                 self.wfile.write(page)
                 return
             static_assets: dict[str, tuple[str, str]] = {
+                # Interface (cache court : une mise à jour doit être visible).
+                "/app.css": ("text/css; charset=utf-8", "app.css"),
+                "/app.js": ("text/javascript; charset=utf-8", "app.js"),
                 "/favicon.svg": ("image/svg+xml", "favicon.svg"),
                 "/favicon.ico": ("image/x-icon", "favicon.ico"),
                 "/apple-touch-icon.png": ("image/png", "apple-touch-icon.png"),
@@ -1064,10 +1088,15 @@ def build_handler(context: WebContext) -> type[BaseHTTPRequestHandler]:
                 asset_file = Path(__file__).parent / "static" / filename
                 if asset_file.is_file():
                     data = asset_file.read_bytes()
+                    cache_ctl = (
+                        "no-cache"
+                        if path in {"/app.css", "/app.js"}
+                        else "public, max-age=86400"
+                    )
                     self.send_response(200)
                     self.send_header("Content-Type", mime_type)
                     self.send_header("Content-Length", str(len(data)))
-                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.send_header("Cache-Control", cache_ctl)
                     self.end_headers()
                     self.wfile.write(data)
                     return
@@ -1136,7 +1165,10 @@ def build_handler(context: WebContext) -> type[BaseHTTPRequestHandler]:
                 )
                 return {"ok": True, "job": job.snapshot()}
             if path == "/api/cycle":
-                if "cycle" in context.jobs.running_kinds:
+                if (
+                    "cycle" in context.jobs.running_kinds
+                    or "withdraw" in context.jobs.running_kinds
+                ):
                     return {"ok": False, "error": "Un cycle est déjà en cours d'exécution."}
                 strategy = str(request.get("strategy") or "ema_cross")
                 dry_run = bool(request.get("dry_run", False))
@@ -1164,6 +1196,21 @@ def build_handler(context: WebContext) -> type[BaseHTTPRequestHandler]:
             if path == "/api/config":
                 return _apply_config(context, request)
             if path == "/api/withdraw":
+                if (
+                    "cycle" in context.jobs.running_kinds
+                    or "withdraw" in context.jobs.running_kinds
+                ):
+                    return {
+                        "ok": False,
+                        "error": "Un cycle ou un retrait est déjà en cours d'exécution.",
+                    }
+                if request.get("async") is True:
+                    job = context.jobs.submit(
+                        "withdraw",
+                        "Retrait et sanctuarisation",
+                        lambda: _run_withdraw(context, request),
+                    )
+                    return {"ok": True, "job": job.snapshot()}
                 return _run_withdraw(context, request)
             raise ValueError("Action inconnue.")
 
