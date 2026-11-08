@@ -117,7 +117,7 @@
   }
 
   /* ---------- Mise en page ---------- */
-  main { padding: 26px 16px 64px; max-width: 860px; margin: 0 auto; }
+  main { padding: 26px 16px 64px; max-width: 940px; margin: 0 auto; }
 
   .card {
     background: var(--surface); border: 1px solid var(--border);
@@ -261,6 +261,7 @@
   .cycle-value { font-family: var(--mono); font-weight: 600; font-size: 13.5px; font-variant-numeric: tabular-nums; }
   .day-badges { display: flex; gap: 6px; flex-wrap: wrap; }
   .status-actions { margin-top: 10px; }
+  .publish-note { margin: 8px 0 0; line-height: 1.5; }
   .dialog-hint { margin: 0 0 12px; }
 
   /* ---------- Petits écrans ---------- */
@@ -271,6 +272,7 @@
     .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .tile .value { font-size: 17px; }
     .tile:first-child .value { font-size: 26px; }
+    button.ghost { min-height: 44px; }
     .tile .label { font-size: 10.5px; }
     /* Première colonne figée : le symbole reste visible pendant le défilement. */
     .table-wrap th:first-child, .table-wrap td:first-child {
@@ -337,6 +339,11 @@
   </div>
   <div class="card" id="status-card">
     <div class="small" id="status">Chargement…</div>
+    <p class="small muted-note publish-note">
+      Seuls les cycles réellement exécutés sont publiés ici : une séance ignorée
+      (marché fermé, week-end, jour férié) n'est pas diffusée. Le détail complet,
+      séances ignorées comprises, reste dans l'interface locale.
+    </p>
     <div class="status-actions"><button id="btn-refresh" class="primary">Rafraîchir</button></div>
   </div>
   <div id="list"></div>
