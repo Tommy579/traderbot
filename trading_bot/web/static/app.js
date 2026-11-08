@@ -229,11 +229,19 @@ function renderPositions(rows, equity = 0) {
       const stopDist = (p.stop_price && p.current_price > 0)
         ? `<br><small class="small">${(((p.stop_price - p.current_price) / p.current_price) * 100).toFixed(1).replace(".", ",")} %</small>`
         : "";
+      // Une position sans stop n'est pas un détail d'affichage : sans ordre chez
+      // le courtier, rien ne la protège si le marché plonge sans le robot.
+      const bare = !p.is_shield && !p.stop_price;
+      const statut = p.is_shield
+        ? `<span class="badge ok">Bouclier</span>`
+        : bare
+          ? `<span class="badge warn">Sans filet</span>`
+          : (p.partial_tp_taken ? `<span class="badge ok">TP 50 % pris (Break-Even)</span>` : `<span class="badge">Actif</span>`);
       return `<tr><td><b>${esc(p.symbol)}</b>${weightPct ? `<br><small class="small">${weightPct}</small>` : ""}</td>
       <td class="num">${p.qty}<br><small class="small">${money(p.value)}</small></td><td class="num">${money2(p.entry_price)}</td><td class="num">${money2(p.current_price)}</td>
       <td class="num ${cls(p.pnl)}">${money2(p.pnl)}<br><small>${pct(p.pnl_pct)}</small></td>
-      <td class="num">${p.is_shield ? "—<br><small>sans stop</small>" : (p.stop_price ? money2(p.stop_price) + stopDist : "—")}</td>
-      <td>${p.is_shield ? `<span class="badge ok">Bouclier</span>` : (p.partial_tp_taken ? `<span class="badge ok">TP 50 % pris (Break-Even)</span>` : `<span class="badge">Actif</span>`)}</td></tr>`;
+      <td class="num">${p.is_shield ? "—<br><small>sans stop</small>" : (p.stop_price ? money2(p.stop_price) + stopDist : "<span class=\"neg\">aucun</span>")}</td>
+      <td>${statut}</td></tr>`;
     }).join("")}
     </tbody></table></div>`;
 }

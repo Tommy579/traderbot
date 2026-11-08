@@ -200,6 +200,10 @@ def timeframe_to_alpaca(timeframe: str) -> TimeFrame:
 
 _UNKNOWN_ASSET_CODE: Final[int] = 40410000
 
+#: Tolérance sur les quantités : 62.9349 arrondi à 62.999999999 serait sinon
+#: ramené à 62 au lieu de 63 après un floor naïf.
+_QTY_EPSILON: Final[float] = 1e-6
+
 
 def _is_unknown_asset(exc: Exception) -> bool:
     """``True`` si Alpaca a répondu « cet actif n'existe pas ».
@@ -481,9 +485,27 @@ class AlpacaPaperClient:
         if intent.order_type is OrderType.STOP:
             if intent.stop_price is None:
                 raise BrokerError(f"ordre stop sans stop_price pour {intent.symbol}")
+            # Alpaca n'accepte pas les quantités fractionnaires sur un stop en
+            # GTC (le fractionnaire n'existe qu'en DAY, donc le stop mourrait
+            # chaque soir). On protège les actions entières et on laisse le
+            # reliquat fractionnaire nu plutôt que de perdre la protection.
+            stop_qty = math.floor(intent.qty + _QTY_EPSILON)
+            if stop_qty < 1:
+                raise BrokerError(
+                    f"stop {intent.symbol} impossible : {intent.qty:g} action(s), "
+                    "Alpaca exige au moins une action entière pour un stop"
+                )
+            if abs(stop_qty - intent.qty) > _QTY_EPSILON:
+                LOGGER.warning(
+                    "stop %s ramené à %d action(s) entières : Alpaca refuse les "
+                    "stops fractionnaires en GTC (reliquat %.4f non protégé)",
+                    intent.symbol,
+                    stop_qty,
+                    intent.qty - stop_qty,
+                )
             request: Any = StopOrderRequest(
                 symbol=intent.symbol,
-                qty=intent.qty,
+                qty=stop_qty,
                 side=side,
                 time_in_force=TimeInForce.GTC,
                 stop_price=intent.stop_price,
@@ -500,7 +522,9 @@ class AlpacaPaperClient:
         try:
             order = self._trading.submit_order(order_data=request)
         except Exception as exc:
-            raise BrokerError(f"rejet de l'ordre {intent.symbol}") from exc
+            # Le message du courtier est la seule information utile au
+            # diagnostic : « rejet de l'ordre X » seul ne dit jamais pourquoi.
+            raise BrokerError(f"rejet de l'ordre {intent.symbol}: {exc}") from exc
 
         self._consumed_decisions.add(intent.token.decision_id)
         receipt = self._to_receipt(order)

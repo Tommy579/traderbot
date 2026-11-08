@@ -364,6 +364,102 @@ def test_submit_stop_intent_builds_stop_order(
     assert receipt.is_filled
 
 
+def test_submit_stop_rounds_fractional_qty_down_to_whole_shares(
+    settings: Settings, fake_trading: FakeTradingClient
+) -> None:
+    """Alpaca refuse un stop fractionnaire en GTC : on protège les actions entières."""
+    client = AlpacaPaperClient(
+        settings, trading_client=fake_trading, data_client=FakeDataClient()
+    )
+    position = Position(
+        symbol="KO",
+        qty=57.268,
+        avg_entry_price=94.69,
+        current_price=94.71,
+        stop_price=91.47,
+        initial_stop_price=91.47,
+    )
+    decision = RiskEngine().evaluate_stop_replace(position, price=94.71, now=NOW)
+    assert decision is not None and decision.intent is not None
+    client.submit(decision.intent, now=NOW)
+
+    request = fake_trading.orders[0]
+    assert float(request.qty) == pytest.approx(57.0)
+    assert float(request.stop_price) == pytest.approx(91.47)
+
+
+def test_submit_stop_keeps_whole_qty_untouched(
+    settings: Settings, fake_trading: FakeTradingClient
+) -> None:
+    """Une position déjà entière n'est pas rognée."""
+    client = AlpacaPaperClient(
+        settings, trading_client=fake_trading, data_client=FakeDataClient()
+    )
+    position = Position(
+        symbol="XOM",
+        qty=128.0,
+        avg_entry_price=182.45,
+        current_price=180.29,
+        stop_price=174.6,
+        initial_stop_price=174.6,
+    )
+    decision = RiskEngine().evaluate_stop_replace(position, price=180.29, now=NOW)
+    assert decision is not None and decision.intent is not None
+    client.submit(decision.intent, now=NOW)
+
+    assert float(fake_trading.orders[0].qty) == pytest.approx(128.0)
+
+
+def test_submit_stop_below_one_share_is_refused_with_a_clear_message(
+    settings: Settings, fake_trading: FakeTradingClient
+) -> None:
+    """Moins d'une action entière : aucun stop possible, le refus doit le dire."""
+    client = AlpacaPaperClient(
+        settings, trading_client=fake_trading, data_client=FakeDataClient()
+    )
+    position = Position(
+        symbol="PLTR",
+        qty=0.4,
+        avg_entry_price=184.33,
+        current_price=178.88,
+        stop_price=168.8,
+        initial_stop_price=168.8,
+    )
+    decision = RiskEngine().evaluate_stop_replace(position, price=178.88, now=NOW)
+    assert decision is not None and decision.intent is not None
+
+    with pytest.raises(BrokerError, match="au moins une action entière"):
+        client.submit(decision.intent, now=NOW)
+    assert fake_trading.orders == []
+
+
+def test_broker_rejection_message_carries_the_cause(
+    settings: Settings, fake_trading: FakeTradingClient
+) -> None:
+    """« rejet de l'ordre X » seul ne dit jamais pourquoi : le motif doit suivre."""
+    client = AlpacaPaperClient(
+        settings, trading_client=fake_trading, data_client=FakeDataClient()
+    )
+
+    def boom(order_data: object) -> None:
+        raise RuntimeError("insufficient qty available for order")
+
+    fake_trading.submit_order = boom  # type: ignore[method-assign]
+    position = Position(
+        symbol="AAPL",
+        qty=10,
+        avg_entry_price=100.0,
+        current_price=110.0,
+        stop_price=104.5,
+        initial_stop_price=96.0,
+    )
+    decision = RiskEngine().evaluate_stop_replace(position, price=110.0, now=NOW)
+    assert decision is not None and decision.intent is not None
+
+    with pytest.raises(BrokerError, match="insufficient qty available"):
+        client.submit(decision.intent, now=NOW)
+
+
 def test_cancel_open_orders_cancels_and_verifies_each_open_order(
     settings: Settings, fake_trading: FakeTradingClient
 ) -> None:

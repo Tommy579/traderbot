@@ -1271,6 +1271,11 @@ details p {
     font-size: clamp(26px, 7.5vw, 32px);
   }
 
+  /* Un lien-bouton reste atteignable au doigt. */
+  button.ghost {
+    min-height: var(--tap);
+  }
+
   /* Première colonne figée : le symbole reste visible pendant le défilement. */
   .table-wrap th:first-child,
   .table-wrap td:first-child {
