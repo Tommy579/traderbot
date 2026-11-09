@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-09T20:57:02.145140+00:00",
+ "updated_at": "2026-11-09T20:58:16.882242+00:00",
  "entries": [
   {
    "received_at": "2026-11-02T08:09:00.648728+00:00",
@@ -230,72 +230,72 @@
    }
   },
   {
-   "received_at": "2026-11-09T20:57:02.145091+00:00",
+   "received_at": "2026-11-09T20:58:16.882191+00:00",
    "event": "cycle_trading",
    "report": {
-    "timestamp": "2026-11-09T20:56:47.000178+00:00",
+    "timestamp": "2026-11-09T20:58:05.000038+00:00",
     "session_date": "2026-11-09",
     "mode": "full",
     "skipped": false,
     "skip_reason": null,
-    "equity": 98010.05076700001,
-    "cash": 20475.465134,
+    "equity": 98030.14557600001,
+    "cash": 20475.47,
     "positions_count": 6,
-    "unrealized_pnl": -1066.3166869147947,
+    "unrealized_pnl": -1046.2267439147952,
     "positions": [
      {
       "symbol": "BRK.B",
       "qty": 9.7779,
       "avg_entry_price": 557.017996,
-      "current_price": 573.95,
+      "current_price": 574.06,
       "stop_price": 556.23,
-      "market_value": 5612.025705000001,
-      "unrealized_pnl": 165.55944191160006
+      "market_value": 5613.101274,
+      "unrealized_pnl": 166.6350109115991
      },
      {
       "symbol": "KO",
       "qty": 57.4979,
       "avg_entry_price": 94.698696,
-      "current_price": 95.92,
+      "current_price": 96.01,
       "stop_price": 92.37,
-      "market_value": 5515.198568,
-      "unrealized_pnl": 70.2224152616002
+      "market_value": 5520.373379000001,
+      "unrealized_pnl": 75.3972262616004
      },
      {
       "symbol": "LLY",
       "qty": 11.529,
       "avg_entry_price": 1407.75,
-      "current_price": 1414.05,
+      "current_price": 1415.13,
       "stop_price": 1322.68,
-      "market_value": 16302.58245,
-      "unrealized_pnl": 72.63269999999947
+      "market_value": 16315.033770000002,
+      "unrealized_pnl": 85.08402000000126
      },
      {
       "symbol": "MSFT",
       "qty": 42.8096,
       "avg_entry_price": 525.668198,
-      "current_price": 545.59,
+      "current_price": 545.595,
       "stop_price": 525.67,
-      "market_value": 23356.489664000004,
-      "unrealized_pnl": 852.8443748992031
+      "market_value": 23356.703712000002,
+      "unrealized_pnl": 853.0584228992029
      },
      {
       "symbol": "WMT",
       "qty": 43.5514,
       "avg_entry_price": 125.131848,
-      "current_price": 125.59,
+      "current_price": 125.765,
       "stop_price": 119.43,
-      "market_value": 5469.620326,
-      "unrealized_pnl": 19.953161012799928
+      "market_value": 5477.2418210000005,
+      "unrealized_pnl": 27.574656012799803
      },
      {
       "symbol": "XOM",
       "qty": 128.946,
       "avg_entry_price": 182.45,
-      "current_price": 165.02,
+      "current_price": 164.97,
       "stop_price": 155.62,
-      "market_value": 21278.66892,
-      "unrealized_pnl": -2247.5287799999974
+      "market_value": 21272.22162,
+      "unrealized_pnl": -2253.9760799999985
      }
     ],
     "signals": {
@@ -317,61 +317,39 @@
     },
     "decisions": [
      {
-      "id": "df9663de2d5d78bc8c8dcf83",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "strategy_exit",
-      "symbol": "PLTR",
-      "side": "sell",
-      "qty": 62.9349,
-      "stop_price": null
-     },
-     {
-      "id": "fe50922ba9740e90bdf801a2",
+      "id": "a44f71ec93c37aa3f86b5f3b",
       "approved": true,
       "code": "APPROVED",
       "reason": "cash_sweep",
       "symbol": "BRK.B",
       "side": "buy",
-      "qty": 6.1995,
-      "stop_price": 556.05
+      "qty": 6.1966,
+      "stop_price": 556.16
      },
      {
-      "id": "565d78b6cc2c19587b813e92",
+      "id": "d3dcadcbcbcabdc7649f88f6",
       "approved": true,
       "code": "APPROVED",
       "reason": "cash_sweep",
       "symbol": "WMT",
       "side": "buy",
-      "qty": 28.3318,
-      "stop_price": 119.48
+      "qty": 28.2848,
+      "stop_price": 119.66
      },
      {
-      "id": "ac0418a3f95040dd0479238f",
+      "id": "f9f3d7f66af39b436984f782",
       "approved": true,
       "code": "APPROVED",
       "reason": "cash_sweep",
       "symbol": "KO",
       "side": "buy",
-      "qty": 37.0955,
-      "stop_price": 92.35
+      "qty": 37.0507,
+      "stop_price": 92.44
      }
     ],
-    "orders": [
-     {
-      "order_id": "e50682f0-3589-4793-854c-a6cb10c06148",
-      "client_order_id": "tbdf9663de2d5d78bc8c8dcf83",
-      "symbol": "PLTR",
-      "side": "sell",
-      "qty": 62.9349,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     }
-    ],
+    "orders": [],
     "halts": [],
     "errors": [
-     "PLTR: annulation des ordres ouverts impossible: annulation de l'ordre ouvert e50682f0-3589-4793-854c-a6cb10c06148 (PLTR) impossible",
      "BRK.B: rejet de l'ordre BRK.B: {\"code\":40310000,\"existing_order_id\":\"fa83d795-2132-40bb-8d5d-03e103f69dd2\",\"message\":\"potential wash trade detected. use complex orders\",\"reject_reason\":\"opposite side market/stop order exists\"}",
      "WMT: rejet de l'ordre WMT: {\"code\":40310000,\"existing_order_id\":\"c6fae72c-e93d-4b4e-aa46-1d318634c958\",\"message\":\"potential wash trade detected. use complex orders\",\"reject_reason\":\"opposite side market/stop order exists\"}",
      "KO: rejet de l'ordre KO: {\"code\":40310000,\"existing_order_id\":\"ae4421d8-18b3-4dae-9a0c-0f7288b76d1c\",\"message\":\"potential wash trade detected. use complex orders\",\"reject_reason\":\"opposite side market/stop order exists\"}"
