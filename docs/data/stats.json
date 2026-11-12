@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-12T20:57:34.729322+00:00",
+ "updated_at": "2026-11-12T20:58:57.354673+00:00",
  "entries": [
   {
    "received_at": "2026-11-02T08:09:00.648728+00:00",
@@ -357,81 +357,81 @@
    }
   },
   {
-   "received_at": "2026-11-12T20:57:34.729268+00:00",
+   "received_at": "2026-11-12T20:58:57.354622+00:00",
    "event": "cycle_trading",
    "report": {
-    "timestamp": "2026-11-12T20:55:42.000039+00:00",
+    "timestamp": "2026-11-12T20:58:43.000029+00:00",
     "session_date": "2026-11-12",
     "mode": "full",
     "skipped": false,
     "skip_reason": null,
-    "equity": 98116.41068352251,
-    "cash": 9808.59440202251,
+    "equity": 98139.5377905,
+    "cash": 9808.6,
     "positions_count": 7,
-    "unrealized_pnl": -842.9385712914973,
+    "unrealized_pnl": -819.8170622914994,
     "positions": [
+     {
+      "symbol": "AMD",
+      "qty": 9.9225,
+      "avg_entry_price": 584.334039,
+      "current_price": 584.39,
+      "stop_price": 502.92,
+      "market_value": 5798.609775,
+      "unrealized_pnl": 0.555273022500246
+     },
      {
       "symbol": "BRK.B",
       "qty": 9.7779,
       "avg_entry_price": 557.017996,
-      "current_price": 589.105,
+      "current_price": 589.31,
       "stop_price": 556.23,
-      "market_value": 5760.209779500001,
-      "unrealized_pnl": 313.74351641159984
-     },
-     {
-      "symbol": "KO",
-      "qty": 57.4979,
-      "avg_entry_price": 94.698696,
-      "current_price": 97.475,
-      "stop_price": 92.37,
-      "market_value": 5604.6078025,
-      "unrealized_pnl": 159.6316497615998
-     },
-     {
-      "symbol": "LLY",
-      "qty": 11.529,
-      "avg_entry_price": 1407.75,
-      "current_price": 1435.52,
-      "stop_price": 1322.68,
-      "market_value": 16550.11008,
-      "unrealized_pnl": 320.16032999999976
-     },
-     {
-      "symbol": "WMT",
-      "qty": 43.5514,
-      "avg_entry_price": 125.131848,
-      "current_price": 126.21,
-      "stop_price": 119.43,
-      "market_value": 5496.622194,
-      "unrealized_pnl": 46.95502901279951
-     },
-     {
-      "symbol": "XOM",
-      "qty": 128.946,
-      "avg_entry_price": 182.45,
-      "current_price": 169.51,
-      "stop_price": 155.62,
-      "market_value": 21857.636459999998,
-      "unrealized_pnl": -1668.5612399999998
+      "market_value": 5762.214249,
+      "unrealized_pnl": 315.74798591159913
      },
      {
       "symbol": "COST",
       "qty": 24.9512,
       "avg_entry_price": 1092.35,
-      "current_price": 1092.565,
+      "current_price": 1092.6,
       "stop_price": 1053.24,
-      "market_value": 27260.807828,
-      "unrealized_pnl": 5.364508000003631
+      "market_value": 27261.681119999997,
+      "unrealized_pnl": 6.2378
      },
      {
-      "symbol": "AMD",
-      "qty": 9.9225,
-      "avg_entry_price": 584.334039,
-      "current_price": 582.295,
-      "stop_price": 502.92,
-      "market_value": 5777.822137499999,
-      "unrealized_pnl": -20.232364477500024
+      "symbol": "KO",
+      "qty": 57.4979,
+      "avg_entry_price": 94.698696,
+      "current_price": 97.385,
+      "stop_price": 92.37,
+      "market_value": 5599.432991500001,
+      "unrealized_pnl": 154.4568387616004
+     },
+     {
+      "symbol": "LLY",
+      "qty": 11.529,
+      "avg_entry_price": 1407.75,
+      "current_price": 1433.09,
+      "stop_price": 1322.68,
+      "market_value": 16522.09461,
+      "unrealized_pnl": 292.144859999999
+     },
+     {
+      "symbol": "WMT",
+      "qty": 43.5514,
+      "avg_entry_price": 125.131848,
+      "current_price": 126.175,
+      "stop_price": 119.43,
+      "market_value": 5495.097895,
+      "unrealized_pnl": 45.43073001279966
+     },
+     {
+      "symbol": "XOM",
+      "qty": 128.946,
+      "avg_entry_price": 182.45,
+      "current_price": 169.775,
+      "stop_price": 155.62,
+      "market_value": 21891.80715,
+      "unrealized_pnl": -1634.3905499999978
      }
     ],
     "signals": {
@@ -453,37 +453,17 @@
     },
     "decisions": [
      {
-      "id": "221aab293fe800e4dafd45b7",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "trailing_stop",
-      "symbol": "MSFT",
-      "side": "sell",
-      "qty": 42.8096,
+      "id": "b2c5a1f30bbbd4840e10aad5",
+      "approved": false,
+      "code": "INSUFFICIENT_BUYING_POWER",
+      "reason": "aucun pouvoir d'achat disponible",
+      "symbol": null,
+      "side": null,
+      "qty": null,
       "stop_price": null
      },
      {
-      "id": "0779d13ca5668dba761fb01b",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "entrée risk",
-      "symbol": "COST",
-      "side": "buy",
-      "qty": 24.9512,
-      "stop_price": 1053.24
-     },
-     {
-      "id": "1c0589071346bac975c0f318",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "entrée notional",
-      "symbol": "AMD",
-      "side": "buy",
-      "qty": 9.9225,
-      "stop_price": 502.92
-     },
-     {
-      "id": "b94ae82b5caf53d8d7ca3a0a",
+      "id": "ee4677f3c117f9ac770329da",
       "approved": false,
       "code": "INSUFFICIENT_BUYING_POWER",
       "reason": "aucun pouvoir d'achat disponible",
@@ -493,52 +473,9 @@
       "stop_price": null
      }
     ],
-    "orders": [
-     {
-      "order_id": "66da0797-9a80-4f5d-b01d-2c9affbf2b99",
-      "client_order_id": "tb221aab293fe800e4dafd45b7",
-      "symbol": "MSFT",
-      "side": "sell",
-      "qty": 42.8096,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "65f4b6af-421a-4737-b0d6-f60efa525048",
-      "client_order_id": "tb0779d13ca5668dba761fb01b",
-      "symbol": "COST",
-      "side": "buy",
-      "qty": 24.9512,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "58db0c04-e58e-406b-af59-3fbc25347f4f",
-      "client_order_id": "tb9ebf5cd9da71896794f4bac6",
-      "symbol": "COST",
-      "side": "sell",
-      "qty": 24.0,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "cd0315a5-5c6f-434c-8c8c-06a328b39c51",
-      "client_order_id": "tb1c0589071346bac975c0f318",
-      "symbol": "AMD",
-      "side": "buy",
-      "qty": 9.9225,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     }
-    ],
+    "orders": [],
     "halts": [],
-    "errors": [
-     "AMD: annulation des ordres ouverts impossible: annulation de l'ordre ouvert cd0315a5-5c6f-434c-8c8c-06a328b39c51 (AMD) impossible"
-    ]
+    "errors": []
    }
   }
  ]
