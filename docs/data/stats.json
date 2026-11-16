@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-16T20:58:08.572330+00:00",
+ "updated_at": "2026-11-16T20:59:19.427937+00:00",
  "entries": [
   {
    "received_at": "2026-11-02T08:09:00.648728+00:00",
@@ -479,90 +479,90 @@
    }
   },
   {
-   "received_at": "2026-11-16T20:58:08.572250+00:00",
+   "received_at": "2026-11-16T20:59:19.427835+00:00",
    "event": "cycle_trading",
    "report": {
-    "timestamp": "2026-11-16T20:57:37.000038+00:00",
+    "timestamp": "2026-11-16T20:59:12.000042+00:00",
     "session_date": "2026-11-16",
     "mode": "full",
     "skipped": false,
     "skip_reason": null,
-    "equity": 97769.94502300001,
+    "equity": 97727.960011,
     "cash": 9775.99,
     "positions_count": 8,
-    "unrealized_pnl": -1188.9642454550958,
+    "unrealized_pnl": -1230.9492574550995,
     "positions": [
      {
       "symbol": "AMD",
       "qty": 9.9225,
       "avg_entry_price": 584.334039,
-      "current_price": 503.965,
+      "current_price": 502.955,
       "stop_price": 502.92,
-      "market_value": 5000.5927125,
-      "unrealized_pnl": -797.4617894774998
+      "market_value": 4990.570987499999,
+      "unrealized_pnl": -807.4835144774997
      },
      {
       "symbol": "BRK.B",
       "qty": 9.7772,
       "avg_entry_price": 557.017996,
-      "current_price": 593.87,
+      "current_price": 593.03,
       "stop_price": 556.23,
-      "market_value": 5806.385764000001,
-      "unrealized_pnl": 360.3094135087997
+      "market_value": 5798.172916,
+      "unrealized_pnl": 352.09656550879936
      },
      {
       "symbol": "COST",
       "qty": 24.9512,
       "avg_entry_price": 1092.35,
-      "current_price": 1113.16,
+      "current_price": 1113.215,
       "stop_price": 1053.24,
-      "market_value": 27774.677792000002,
-      "unrealized_pnl": 519.2344720000043
+      "market_value": 27776.050108,
+      "unrealized_pnl": 520.6067880000003
      },
      {
       "symbol": "KO",
       "qty": 57.4977,
       "avg_entry_price": 94.698696,
-      "current_price": 99.555,
+      "current_price": 99.565,
       "stop_price": 92.37,
-      "market_value": 5724.183523500001,
-      "unrealized_pnl": 279.2263105008005
+      "market_value": 5724.7585005,
+      "unrealized_pnl": 279.80128750079996
      },
      {
       "symbol": "LLY",
       "qty": 11.529,
       "avg_entry_price": 1407.75,
-      "current_price": 1432.455,
+      "current_price": 1432.03,
       "stop_price": 1322.68,
-      "market_value": 16514.773695,
-      "unrealized_pnl": 284.8239449999992
+      "market_value": 16509.87387,
+      "unrealized_pnl": 279.9241199999997
      },
      {
       "symbol": "MSFT",
       "qty": 0.063,
       "avg_entry_price": 517.036,
-      "current_price": 517.585,
+      "current_price": 517.72,
       "stop_price": 487.19,
-      "market_value": 32.607855,
-      "unrealized_pnl": 0.03458700000000579
+      "market_value": 32.61636,
+      "unrealized_pnl": 0.043092000000005216
      },
      {
       "symbol": "WMT",
       "qty": 43.5514,
       "avg_entry_price": 125.131848,
-      "current_price": 128.265,
+      "current_price": 128.335,
       "stop_price": 119.43,
-      "market_value": 5586.120320999999,
-      "unrealized_pnl": 136.45315601279918
+      "market_value": 5589.168919000001,
+      "unrealized_pnl": 139.50175401280012
      },
      {
       "symbol": "XOM",
       "qty": 128.946,
       "avg_entry_price": 182.45,
-      "current_price": 167.16,
+      "current_price": 166.975,
       "stop_price": 155.62,
-      "market_value": 21554.61336,
-      "unrealized_pnl": -1971.584339999999
+      "market_value": 21530.75835,
+      "unrealized_pnl": -1995.4393499999992
      }
     ],
     "signals": {
@@ -584,17 +584,7 @@
     },
     "decisions": [
      {
-      "id": "4d5ea61cd7d3f98d4caaa701",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "safe_haven_unwind",
-      "symbol": "BRK.B",
-      "side": "sell",
-      "qty": 0.0002,
-      "stop_price": null
-     },
-     {
-      "id": "5d9c42863b3ed1721204b93c",
+      "id": "108b3402ac155d02c4057667",
       "approved": false,
       "code": "MAX_POSITIONS_REACHED",
       "reason": "maximum de 5 positions atteint",
@@ -606,9 +596,7 @@
     ],
     "orders": [],
     "halts": [],
-    "errors": [
-     "BRK.B: annulation des ordres ouverts impossible: ordres encore ouverts pour BRK.B après annulation: 24170db1-c4b5-41de-ac38-024493cab577"
-    ]
+    "errors": []
    }
   }
  ]
