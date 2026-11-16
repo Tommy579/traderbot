@@ -351,7 +351,7 @@
 
 <dialog id="modal-alpaca">
   <h3>Connexion directe Alpaca (IEX)</h3>
-  <p class="small dialog-hint">Ces identifiants restent dans votre navigateur, <b>pour cette session seulement</b> (effacés à la fermeture de l'onglet). Ils ne sont jamais envoyés à GitHub. Cette page partage son origine avec vos autres projets GitHub Pages : n'y collez que des clés <b>paper</b>.</p>
+  <p class="small dialog-hint">Ces identifiants sont enregistrés dans votre navigateur (localStorage) et persistent entre les sessions. Ils ne sont jamais envoyés à GitHub. Cette page partage son origine avec vos autres projets GitHub Pages : n'y collez que des clés <b>paper</b>.</p>
   <label class="small">Clé API Alpaca (APCA-API-KEY-ID)</label>
   <input id="input-alpaca-key" class="dialog-input" type="text" placeholder="PK...">
   <label class="small">Clé secrète Alpaca (APCA-API-SECRET-KEY)</label>
@@ -689,8 +689,8 @@ async function pollQuotesOnce() {
 }
 
 async function refreshAlpacaSnapshot() {
-  const key = (sessionStorage.getItem("alpaca_key") || "").trim();
-  const secret = (sessionStorage.getItem("alpaca_secret") || "").trim();
+  const key = (localStorage.getItem("alpaca_key") || "").trim();
+  const secret = (localStorage.getItem("alpaca_secret") || "").trim();
   if (!key || !secret) {
     await pollQuotesOnce();
     recalculateAndRenderPositions();
@@ -768,8 +768,8 @@ function connectAlpacaWs(symbols) {
     try { alpacaWs.close(); } catch (_) {}
     alpacaWs = null;
   }
-  const key = (sessionStorage.getItem("alpaca_key") || "").trim();
-  const secret = (sessionStorage.getItem("alpaca_secret") || "").trim();
+  const key = (localStorage.getItem("alpaca_key") || "").trim();
+  const secret = (localStorage.getItem("alpaca_secret") || "").trim();
   if (!key || !secret || !symbols || !symbols.length) return false;
 
   try {
@@ -872,8 +872,8 @@ $("#toggle-live").addEventListener("click", () => {
 
 const modalAlpaca = $("#modal-alpaca");
 $("#btn-open-alpaca").addEventListener("click", () => {
-  $("#input-alpaca-key").value = sessionStorage.getItem("alpaca_key") || "";
-  $("#input-alpaca-secret").value = sessionStorage.getItem("alpaca_secret") || "";
+  $("#input-alpaca-key").value = localStorage.getItem("alpaca_key") || "";
+  $("#input-alpaca-secret").value = localStorage.getItem("alpaca_secret") || "";
   modalAlpaca.showModal();
 });
 
@@ -882,8 +882,8 @@ $("#btn-alpaca-close").addEventListener("click", () => {
 });
 
 $("#btn-alpaca-clear").addEventListener("click", () => {
-  sessionStorage.removeItem("alpaca_key");
-  sessionStorage.removeItem("alpaca_secret");
+  localStorage.removeItem("alpaca_key");
+  localStorage.removeItem("alpaca_secret");
   $("#input-alpaca-key").value = "";
   $("#input-alpaca-secret").value = "";
   if (alpacaWs) {
@@ -898,8 +898,8 @@ $("#btn-alpaca-save").addEventListener("click", () => {
   const key = $("#input-alpaca-key").value.trim();
   const secret = $("#input-alpaca-secret").value.trim();
   if (key && secret) {
-    sessionStorage.setItem("alpaca_key", key);
-    sessionStorage.setItem("alpaca_secret", secret);
+    localStorage.setItem("alpaca_key", key);
+    localStorage.setItem("alpaca_secret", secret);
     $("#live-status-note").textContent = "Cotations : identifiants Alpaca enregistrés.";
     if (liveActive) {
       const symbols = (currentReport && currentReport.positions ? currentReport.positions.map((p) => p.symbol) : []);
