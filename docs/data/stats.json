@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-16T20:56:32.834821+00:00",
+ "updated_at": "2026-11-16T20:58:08.572330+00:00",
  "entries": [
   {
    "received_at": "2026-11-02T08:09:00.648728+00:00",
@@ -479,72 +479,81 @@
    }
   },
   {
-   "received_at": "2026-11-16T20:56:32.834743+00:00",
+   "received_at": "2026-11-16T20:58:08.572250+00:00",
    "event": "cycle_trading",
    "report": {
-    "timestamp": "2026-11-16T20:55:58.000035+00:00",
+    "timestamp": "2026-11-16T20:57:37.000038+00:00",
     "session_date": "2026-11-16",
     "mode": "full",
     "skipped": false,
     "skip_reason": null,
-    "equity": 97775.389233,
-    "cash": 9775.982295000002,
+    "equity": 97769.94502300001,
+    "cash": 9775.99,
     "positions_count": 8,
-    "unrealized_pnl": -1183.5123304550982,
+    "unrealized_pnl": -1188.9642454550958,
     "positions": [
      {
       "symbol": "AMD",
       "qty": 9.9225,
       "avg_entry_price": 584.334039,
-      "current_price": 505.37,
+      "current_price": 503.965,
       "stop_price": 502.92,
-      "market_value": 5014.5338249999995,
-      "unrealized_pnl": -783.5206769774995
+      "market_value": 5000.5927125,
+      "unrealized_pnl": -797.4617894774998
      },
      {
       "symbol": "BRK.B",
       "qty": 9.7772,
       "avg_entry_price": 557.017996,
-      "current_price": 593.77,
+      "current_price": 593.87,
       "stop_price": 556.23,
-      "market_value": 5805.408044,
-      "unrealized_pnl": 359.33169350879945
+      "market_value": 5806.385764000001,
+      "unrealized_pnl": 360.3094135087997
      },
      {
       "symbol": "COST",
       "qty": 24.9512,
       "avg_entry_price": 1092.35,
-      "current_price": 1113.375,
+      "current_price": 1113.16,
       "stop_price": 1053.24,
-      "market_value": 27780.0423,
-      "unrealized_pnl": 524.5989800000023
+      "market_value": 27774.677792000002,
+      "unrealized_pnl": 519.2344720000043
      },
      {
       "symbol": "KO",
       "qty": 57.4977,
       "avg_entry_price": 94.698696,
-      "current_price": 99.49,
+      "current_price": 99.555,
       "stop_price": 92.37,
-      "market_value": 5720.446173,
-      "unrealized_pnl": 275.4889600007998
+      "market_value": 5724.183523500001,
+      "unrealized_pnl": 279.2263105008005
      },
      {
       "symbol": "LLY",
       "qty": 11.529,
       "avg_entry_price": 1407.75,
-      "current_price": 1431.57,
+      "current_price": 1432.455,
       "stop_price": 1322.68,
-      "market_value": 16504.57053,
-      "unrealized_pnl": 274.6207799999993
+      "market_value": 16514.773695,
+      "unrealized_pnl": 284.8239449999992
+     },
+     {
+      "symbol": "MSFT",
+      "qty": 0.063,
+      "avg_entry_price": 517.036,
+      "current_price": 517.585,
+      "stop_price": 487.19,
+      "market_value": 32.607855,
+      "unrealized_pnl": 0.03458700000000579
      },
      {
       "symbol": "WMT",
       "qty": 43.5514,
       "avg_entry_price": 125.131848,
-      "current_price": 128.29,
+      "current_price": 128.265,
       "stop_price": 119.43,
-      "market_value": 5587.209105999999,
-      "unrealized_pnl": 137.54194101279944
+      "market_value": 5586.120320999999,
+      "unrealized_pnl": 136.45315601279918
      },
      {
       "symbol": "XOM",
@@ -554,15 +563,6 @@
       "stop_price": 155.62,
       "market_value": 21554.61336,
       "unrealized_pnl": -1971.584339999999
-     },
-     {
-      "symbol": "MSFT",
-      "qty": 0.063,
-      "avg_entry_price": 517.036,
-      "current_price": 517.2,
-      "stop_price": 487.19,
-      "market_value": 32.583600000000004,
-      "unrealized_pnl": 0.01033200000000636
      }
     ],
     "signals": {
@@ -584,57 +584,17 @@
     },
     "decisions": [
      {
-      "id": "1897687517dbcdd5b3e41238",
+      "id": "4d5ea61cd7d3f98d4caaa701",
       "approved": true,
       "code": "APPROVED",
       "reason": "safe_haven_unwind",
       "symbol": "BRK.B",
       "side": "sell",
-      "qty": 0.0007,
-      "stop_price": null
-     },
-     {
-      "id": "f81ebdac8142d05d72db7b0e",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "safe_haven_unwind",
-      "symbol": "KO",
-      "side": "sell",
       "qty": 0.0002,
       "stop_price": null
      },
      {
-      "id": "b00cf6a6eecf27e25f897fb4",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "entrée notional",
-      "symbol": "MSFT",
-      "side": "buy",
-      "qty": 0.063,
-      "stop_price": 487.19
-     },
-     {
-      "id": "e20d233ebef4d319ba9b843e",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "safe_haven_unwind",
-      "symbol": "BRK.B",
-      "side": "sell",
-      "qty": 0.0007,
-      "stop_price": null
-     },
-     {
-      "id": "ee0a13bda98dd95d797ed924",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "safe_haven_unwind",
-      "symbol": "KO",
-      "side": "sell",
-      "qty": 0.0002,
-      "stop_price": null
-     },
-     {
-      "id": "232569f7fb32733c2853a8ee",
+      "id": "5d9c42863b3ed1721204b93c",
       "approved": false,
       "code": "MAX_POSITIONS_REACHED",
       "reason": "maximum de 5 positions atteint",
@@ -644,63 +604,10 @@
       "stop_price": null
      }
     ],
-    "orders": [
-     {
-      "order_id": "ca9fb458-9650-4cbf-8a71-0569845ca0cb",
-      "client_order_id": "tbb00cf6a6eecf27e25f897fb4",
-      "symbol": "MSFT",
-      "side": "buy",
-      "qty": 0.063,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "12729279-bdbb-4e97-81bf-0a8643e90a2b",
-      "client_order_id": "tbe20d233ebef4d319ba9b843e",
-      "symbol": "BRK.B",
-      "side": "sell",
-      "qty": 0.0007,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "24170db1-c4b5-41de-ac38-024493cab577",
-      "client_order_id": "tb59f56c03e6db0df5923f1488",
-      "symbol": "BRK.B",
-      "side": "sell",
-      "qty": 9.0,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "10f4ec30-d1c0-49c3-b57f-d982a8374c5e",
-      "client_order_id": "tbee0a13bda98dd95d797ed924",
-      "symbol": "KO",
-      "side": "sell",
-      "qty": 0.0002,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "b8555cb9-2f30-4c57-bff8-7c30c21add9d",
-      "client_order_id": "tb0beeb9d3ea70626521ec634e",
-      "symbol": "KO",
-      "side": "sell",
-      "qty": 57.0,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     }
-    ],
+    "orders": [],
     "halts": [],
     "errors": [
-     "BRK.B: annulation des ordres ouverts impossible: ordres encore ouverts pour BRK.B après annulation: fa83d795-2132-40bb-8d5d-03e103f69dd2",
-     "KO: annulation des ordres ouverts impossible: ordres encore ouverts pour KO après annulation: ae4421d8-18b3-4dae-9a0c-0f7288b76d1c",
-     "MSFT: stop MSFT impossible : 0.063 action(s), Alpaca exige au moins une action entière pour un stop"
+     "BRK.B: annulation des ordres ouverts impossible: ordres encore ouverts pour BRK.B après annulation: 24170db1-c4b5-41de-ac38-024493cab577"
     ]
    }
   }
