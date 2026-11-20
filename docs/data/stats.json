@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-20T20:58:54.384942+00:00",
+ "updated_at": "2026-11-20T21:00:04.316824+00:00",
  "entries": [
   {
    "received_at": "2026-11-02T08:09:00.648728+00:00",
@@ -855,81 +855,81 @@
    }
   },
   {
-   "received_at": "2026-11-20T20:58:54.384891+00:00",
+   "received_at": "2026-11-20T21:00:04.316772+00:00",
    "event": "cycle_trading",
    "report": {
-    "timestamp": "2026-11-20T20:58:42.000031+00:00",
+    "timestamp": "2026-11-20T20:59:57.000029+00:00",
     "session_date": "2026-11-20",
     "mode": "full",
     "skipped": false,
     "skip_reason": null,
-    "equity": 94262.536741244,
-    "cash": 18853.773523244,
+    "equity": 94498.660982,
+    "cash": 18853.77,
     "positions_count": 7,
-    "unrealized_pnl": -3880.1270008307984,
+    "unrealized_pnl": -3643.999229235398,
     "positions": [
      {
       "symbol": "AMD",
       "qty": 6.6559,
       "avg_entry_price": 498.770146,
-      "current_price": 421.73,
+      "current_price": 424.3,
       "stop_price": 416.25,
-      "market_value": 2806.992707,
-      "unrealized_pnl": -512.7715077613999
+      "market_value": 2824.09837,
+      "unrealized_pnl": -495.66584476139997
      },
      {
       "symbol": "BRK.B",
       "qty": 14.5542,
-      "avg_entry_price": 564.2953595412871,
-      "current_price": 567.29,
+      "avg_entry_price": 564.29536,
+      "current_price": 569.92,
       "stop_price": 548.81,
-      "market_value": 8256.452118,
-      "unrealized_pnl": 43.584596164198786
+      "market_value": 8294.729663999999,
+      "unrealized_pnl": 81.86213548799999
      },
      {
       "symbol": "COST",
       "qty": 17.1112,
       "avg_entry_price": 1092.35,
-      "current_price": 1102.52,
+      "current_price": 1104.36,
       "stop_price": 1053.24,
-      "market_value": 18865.440223999998,
-      "unrealized_pnl": 174.02090400000125
+      "market_value": 18896.924831999997,
+      "unrealized_pnl": 205.50551199999984
      },
      {
       "symbol": "KO",
-      "qty": 28.750899999999998,
-      "avg_entry_price": 96.84756332811841,
-      "current_price": 96.845,
+      "qty": 28.7509,
+      "avg_entry_price": 96.847563,
+      "current_price": 97.0,
       "stop_price": 93.33,
-      "market_value": 2784.3809104999996,
-      "unrealized_pnl": -0.07369799039967329
+      "market_value": 2788.8373,
+      "unrealized_pnl": 4.382700943300177
      },
      {
       "symbol": "LLY",
       "qty": 11.529,
       "avg_entry_price": 1407.75,
-      "current_price": 1344.83,
+      "current_price": 1349.56,
       "stop_price": 1322.68,
-      "market_value": 15504.545069999998,
-      "unrealized_pnl": -725.4046800000008
+      "market_value": 15559.077239999999,
+      "unrealized_pnl": -670.8725100000006
      },
      {
       "symbol": "WMT",
       "qty": 51.9459,
-      "avg_entry_price": 125.59676709313344,
-      "current_price": 128.015,
+      "avg_entry_price": 125.596767,
+      "current_price": 128.04,
       "stop_price": 122.55,
-      "market_value": 6649.8543885,
-      "unrealized_pnl": 125.61728475679911
+      "market_value": 6651.153036,
+      "unrealized_pnl": 126.9159370946996
      },
      {
       "symbol": "XOM",
       "qty": 128.946,
       "avg_entry_price": 182.45,
-      "current_price": 159.3,
+      "current_price": 159.99,
       "stop_price": 155.62,
-      "market_value": 20541.0978,
-      "unrealized_pnl": -2985.099899999997
+      "market_value": 20630.07054,
+      "unrealized_pnl": -2896.1271599999973
      }
     ],
     "signals": {
@@ -951,7 +951,7 @@
     },
     "decisions": [
      {
-      "id": "37a2444de0a3a6699e12a32a",
+      "id": "9445940a0bcf5091c657aae9",
       "approved": false,
       "code": "BEAR_REGIME_VETO",
       "reason": "[BEAR_REGIME_VETO] marché baissier (200 SMA) : entrée offensive interdite sur MSFT",
@@ -959,85 +959,11 @@
       "side": null,
       "qty": null,
       "stop_price": null
-     },
-     {
-      "id": "9fe3a74465fdcdc2034079ae",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "cash_sweep",
-      "symbol": "BRK.B",
-      "side": "buy",
-      "qty": 1.8943,
-      "stop_price": 548.81
-     },
-     {
-      "id": "ccb98e4c61ce061ac29dd432",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "cash_sweep",
-      "symbol": "WMT",
-      "side": "buy",
-      "qty": 8.3945,
-      "stop_price": 122.55
-     },
-     {
-      "id": "a235ad9dee719254c5880ba2",
-      "approved": true,
-      "code": "APPROVED",
-      "reason": "cash_sweep",
-      "symbol": "KO",
-      "side": "buy",
-      "qty": 11.0963,
-      "stop_price": 93.33
      }
     ],
-    "orders": [
-     {
-      "order_id": "9371fe88-9eb1-4a6d-8503-7c2dcf000e6b",
-      "client_order_id": "tb9fe3a74465fdcdc2034079ae",
-      "symbol": "BRK.B",
-      "side": "buy",
-      "qty": 1.8943,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "4e78f5cf-612a-455f-8383-296090a5a693",
-      "client_order_id": "tb93831ebbfeae90fd318b020b",
-      "symbol": "BRK.B",
-      "side": "sell",
-      "qty": 14.0,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "bbe118c7-cee5-4571-95ae-b61372b7e2de",
-      "client_order_id": "tbccb98e4c61ce061ac29dd432",
-      "symbol": "WMT",
-      "side": "buy",
-      "qty": 8.3945,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     },
-     {
-      "order_id": "beafa6f8-41a4-4a22-a448-30e7cf6d128c",
-      "client_order_id": "tba235ad9dee719254c5880ba2",
-      "symbol": "KO",
-      "side": "buy",
-      "qty": 11.0963,
-      "status": "pending_new",
-      "filled_qty": 0.0,
-      "avg_fill_price": null
-     }
-    ],
+    "orders": [],
     "halts": [],
-    "errors": [
-     "WMT: annulation des ordres ouverts impossible: annulation de l'ordre ouvert bbe118c7-cee5-4571-95ae-b61372b7e2de (WMT) impossible",
-     "KO: annulation des ordres ouverts impossible: annulation de l'ordre ouvert beafa6f8-41a4-4a22-a448-30e7cf6d128c (KO) impossible"
-    ]
+    "errors": []
    }
   }
  ]
