@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-18T20:59:49.739042+00:00",
+ "updated_at": "2026-11-20T20:56:18.772598+00:00",
  "entries": [
   {
    "received_at": "2026-11-02T08:09:00.648728+00:00",
@@ -851,6 +851,141 @@
      "BRK.B: rejet de l'ordre BRK.B: {\"code\":40310000,\"existing_order_id\":\"cdc4525f-0ae5-46e2-b3f8-c88229b191da\",\"message\":\"potential wash trade detected. use complex orders\",\"reject_reason\":\"opposite side market/stop order exists\"}",
      "WMT: rejet de l'ordre WMT: {\"code\":40310000,\"existing_order_id\":\"c6fae72c-e93d-4b4e-aa46-1d318634c958\",\"message\":\"potential wash trade detected. use complex orders\",\"reject_reason\":\"opposite side market/stop order exists\"}",
      "KO: rejet de l'ordre KO: {\"code\":40310000,\"existing_order_id\":\"32606bae-b4e9-4fa2-8df6-f13830c1f363\",\"message\":\"potential wash trade detected. use complex orders\",\"reject_reason\":\"opposite side market/stop order exists\"}"
+    ]
+   }
+  },
+  {
+   "received_at": "2026-11-20T20:56:18.772547+00:00",
+   "event": "cycle_trading",
+   "report": {
+    "timestamp": "2026-11-20T20:55:16.000028+00:00",
+    "session_date": "2026-11-20",
+    "mode": "full",
+    "skipped": false,
+    "skip_reason": null,
+    "equity": 94345.43492700001,
+    "cash": 15062.107524000001,
+    "positions_count": 7,
+    "unrealized_pnl": -3727.358126768597,
+    "positions": [
+     {
+      "symbol": "AMD",
+      "qty": 6.6559,
+      "avg_entry_price": 498.770146,
+      "current_price": 420.74,
+      "stop_price": 416.25,
+      "market_value": 2800.403366,
+      "unrealized_pnl": -519.3608487614
+     },
+     {
+      "symbol": "BRK.B",
+      "qty": 12.6599,
+      "avg_entry_price": 563.818842,
+      "current_price": 567.61,
+      "stop_price": 556.62,
+      "market_value": 7185.8858390000005,
+      "unrealized_pnl": 47.99568116419995
+     },
+     {
+      "symbol": "COST",
+      "qty": 24.9512,
+      "avg_entry_price": 1092.35,
+      "current_price": 1101.76,
+      "stop_price": 1053.24,
+      "market_value": 27490.234112,
+      "unrealized_pnl": 234.79079200000206
+     },
+     {
+      "symbol": "KO",
+      "qty": 0.9494,
+      "avg_entry_price": 96.664443,
+      "current_price": 96.85,
+      "stop_price": 94.87,
+      "market_value": 91.94939,
+      "unrealized_pnl": 0.17616781579998922
+     },
+     {
+      "symbol": "LLY",
+      "qty": 11.529,
+      "avg_entry_price": 1407.75,
+      "current_price": 1348.33,
+      "stop_price": 1322.68,
+      "market_value": 15544.896569999999,
+      "unrealized_pnl": -685.0531800000008
+     },
+     {
+      "symbol": "WMT",
+      "qty": 43.5514,
+      "avg_entry_price": 125.131848,
+      "current_price": 127.84,
+      "stop_price": 119.43,
+      "market_value": 5567.610976,
+      "unrealized_pnl": 117.94381101279993
+     },
+     {
+      "symbol": "XOM",
+      "qty": 128.946,
+      "avg_entry_price": 182.45,
+      "current_price": 159.775,
+      "stop_price": 155.62,
+      "market_value": 20602.34715,
+      "unrealized_pnl": -2923.850549999998
+     }
+    ],
+    "signals": {
+     "AMD": "HOLD",
+     "AMZN": "SELL",
+     "AVGO": "SELL",
+     "BRK.B": "BUY",
+     "COST": "BUY",
+     "JPM": "SELL",
+     "KO": "BUY",
+     "LLY": "BUY",
+     "META": "HOLD",
+     "MSFT": "BUY",
+     "NEE": "SELL",
+     "NVDA": "SELL",
+     "PLTR": "SELL",
+     "WMT": "BUY",
+     "XOM": "BUY"
+    },
+    "decisions": [
+     {
+      "id": "4d8ee4c5feac7c9d066e2236",
+      "approved": true,
+      "code": "APPROVED",
+      "reason": "position_trim_overweight",
+      "symbol": "COST",
+      "side": "sell",
+      "qty": 7.8261,
+      "stop_price": null
+     },
+     {
+      "id": "d6f9abf07a3da1e149165e8d",
+      "approved": true,
+      "code": "APPROVED",
+      "reason": "stop_loss",
+      "symbol": "MSFT",
+      "side": "sell",
+      "qty": 0.063,
+      "stop_price": null
+     }
+    ],
+    "orders": [
+     {
+      "order_id": "4d30e3fd-34b9-470d-b305-cc8a1a1a615b",
+      "client_order_id": "tbd6f9abf07a3da1e149165e8d",
+      "symbol": "MSFT",
+      "side": "sell",
+      "qty": 0.063,
+      "status": "pending_new",
+      "filled_qty": 0.0,
+      "avg_fill_price": null
+     }
+    ],
+    "halts": [],
+    "errors": [
+     "COST: annulation des ordres ouverts impossible: ordres encore ouverts pour COST après annulation: 58db0c04-e58e-406b-af59-3fbc25347f4f"
     ]
    }
   }
