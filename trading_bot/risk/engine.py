@@ -24,7 +24,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import StrEnum
@@ -309,7 +309,6 @@ class AccountState:
     positions: dict[str, Position] = field(default_factory=dict)
     day_start_equity: float | None = None
     peak_equity: float | None = None
-    realized_pnl_today: float = 0.0
     trading_day: date | None = None
     halted: bool = False
     halt_reason: str | None = None
@@ -492,7 +491,6 @@ class RiskEngine:
         if account.day_start_equity is None or account.trading_day != session_date:
             account.trading_day = session_date
             account.day_start_equity = account.equity
-            account.realized_pnl_today = 0.0
             if account.halt_scope is HaltScope.DAY:
                 account.halted = False
                 account.halt_reason = None
@@ -789,7 +787,6 @@ class RiskEngine:
             raw_qty = min(qty_by_risk, qty_by_notional)
             binding = "risk" if qty_by_risk <= qty_by_notional else "notional"
         qty = self._round_qty(raw_qty)
-        binding = "risk" if qty_by_risk <= qty_by_notional else "notional"
 
         metrics: dict[str, float] = {
             **base_metrics,
@@ -808,6 +805,16 @@ class RiskEngine:
             return self._reject(
                 RejectionCode.BELOW_MIN_NOTIONAL,
                 "quantité arrondie à zéro (capital ou risque insuffisant)",
+                now,
+                metrics,
+            )
+        if not is_shield and stop_price is not None and qty < 1.0 - _QTY_EPSILON:
+            return self._reject(
+                RejectionCode.BELOW_MIN_NOTIONAL,
+                (
+                    f"quantité {qty:.4f} < 1 action entière : Alpaca interdit les "
+                    "stops GTC fractionnaires"
+                ),
                 now,
                 metrics,
             )
@@ -894,6 +901,24 @@ class RiskEngine:
         }
         return self._approve(intent, now, metrics)
 
+    def compute_unwind_needed(
+        self,
+        account: AccountState,
+        *,
+        target_notional: float,
+    ) -> float:
+        """Calcule le cash à libérer des poches défensives pour financer un achat.
+
+        Respecte à la fois ``cash_buffer_pct`` et ``withdrawable_cash_floor_usd``,
+        exactement comme :meth:`evaluate_entry`.
+        """
+        if target_notional <= 0.0 or account.equity <= 0.0:
+            return 0.0
+        cash_buffer = account.equity * self._config.cash_buffer_pct
+        protected_cash = max(cash_buffer, self._config.withdrawable_cash_floor_usd)
+        usable_cash = max(0.0, min(account.cash - protected_cash, account.buying_power))
+        return max(0.0, target_notional - usable_cash)
+
     def evaluate_safe_haven_unwind(
         self,
         account: AccountState,
@@ -902,24 +927,31 @@ class RiskEngine:
         now: datetime,
         *,
         reason: str = "safe_haven_unwind",
+        extra_symbols: Sequence[str] = (),
     ) -> list[RiskDecision]:
-        """Génère les ordres de vente nécessaires sur la poche safe haven pour libérer du cash.
+        """Génère les ordres de vente nécessaires sur la poche défensive pour libérer du cash.
 
         Seul le montant nécessaire (needed_cash) est vendu, dans la limite des
-        positions de repli disponibles.
+        positions de repli disponibles (ou ``extra_symbols``, ex. le Bouclier SGOV
+        lors d'une reprise haussière sous ``shield_sword``).
         """
         self._require_aware(now)
-        if not self._config.safe_haven_enabled or needed_cash <= 0:
+        if needed_cash <= 0:
+            return []
+        if not self._config.safe_haven_enabled and not extra_symbols:
             return []
 
         decisions: list[RiskDecision] = []
         remaining_shortfall = needed_cash
+        eligible = set(extra_symbols)
+        if self._config.safe_haven_enabled:
+            eligible.update(self._config.safe_haven_symbols)
 
         # Parcourt les positions de repli dans un ordre déterministe
         safe_positions = [
             p
             for sym, p in sorted(account.positions.items())
-            if sym in self._config.safe_haven_symbols and p.qty > 0
+            if sym in eligible and p.qty > 0
         ]
 
         for pos in safe_positions:
@@ -1097,14 +1129,16 @@ class RiskEngine:
         price: float,
         target_weight: float,
         now: datetime,
+        allow_full_defensive: bool = False,
     ) -> RiskDecision | None:
         """Complète la poche défensive jusqu'à son poids cible.
 
         Le Bouclier n'obéit pas à un signal : il se finance sur le cash
         excédentaire (au-delà du buffer de liquidités et du plancher retirable)
-        jusqu'à représenter ``target_weight`` de l'équité. Le complément est
-        plafonné par l'exposition brute restante pour ne jamais franchir les
-        limites du profil de risque.
+        jusqu'à représenter ``target_weight`` de l'équité. En marché baissier
+        (``allow_full_defensive=True``), le plafond d'exposition brute est
+        relâché jusqu'à ``1 - cash_buffer_pct`` afin de placer la quasi-totalité
+        du capital non sanctuarisé sur le Bouclier sans risque.
 
         Returns:
             Une décision d'achat approuvée portant un :class:`OrderIntent`, ou
@@ -1134,8 +1168,13 @@ class RiskEngine:
             self._config.withdrawable_cash_floor_usd,
         )
         cash_available = max(0.0, min(account.cash - protected_cash, account.buying_power))
+        gross_cap_pct = (
+            max(self.effective_gross_cap_pct(), 1.0 - self._config.cash_buffer_pct)
+            if allow_full_defensive
+            else self.effective_gross_cap_pct()
+        )
         gross_remaining = max(
-            0.0, account.equity * self.effective_gross_cap_pct() - account.gross_exposure
+            0.0, account.equity * gross_cap_pct - account.gross_exposure
         )
         budget = min(gap, cash_available, gross_remaining)
         qty = self._round_qty(budget / price)
@@ -1500,12 +1539,6 @@ class RiskEngine:
             )
         return decisions
 
-    def record_realized_pnl(self, account: AccountState, amount: float) -> None:
-        """Comptabilise un P&L réalisé dans le compteur journalier."""
-        if not math.isfinite(amount):
-            raise RiskError("P&L réalisé non fini")
-        account.realized_pnl_today += amount
-
     def rebase_equity_reference(
         self, account: AccountState, *, reason: str
     ) -> tuple[float | None, bool]:
@@ -1536,7 +1569,6 @@ class RiskEngine:
         previous_peak = account.peak_equity
         account.peak_equity = account.equity
         account.day_start_equity = account.equity
-        account.realized_pnl_today = 0.0
         lifted = account.halt_scope is HaltScope.PERMANENT
         if lifted:
             account.halted = False

@@ -39,6 +39,7 @@
       <button role="tab" id="tab-dashboard" data-tab="dashboard" aria-controls="dashboard" aria-selected="true" tabindex="0" class="active">Tableau de bord</button>
       <button role="tab" id="tab-history" data-tab="history" aria-controls="history" aria-selected="false" tabindex="-1">Historique</button>
       <button role="tab" id="tab-backtest" data-tab="backtest" aria-controls="backtest" aria-selected="false" tabindex="-1">Tester sur le passé</button>
+      <button role="tab" id="tab-predict" data-tab="predict" aria-controls="predict" aria-selected="false" tabindex="-1">Prédiction</button>
       <button role="tab" id="tab-pilot" data-tab="pilot" aria-controls="pilot" aria-selected="false" tabindex="-1">Piloter</button>
       <button role="tab" id="tab-settings" data-tab="settings" aria-controls="settings" aria-selected="false" tabindex="-1">Réglages</button>
     </nav>
@@ -147,6 +148,10 @@
           <label for="bt-start">Date de début</label>
           <input id="bt-start" type="date" value="2023-01-01">
         </div>
+        <div>
+          <label for="bt-end">Date de fin (optionnel)</label>
+          <input id="bt-end" type="date">
+        </div>
       </div>
       <div class="actions">
         <button class="primary" id="btn-backtest" type="button">Lancer le test (≈ 30 s)</button>
@@ -154,6 +159,37 @@
       <div class="msg" id="bt-msg" role="status" aria-live="polite"></div>
     </div>
     <div id="bt-result" aria-live="polite"></div>
+  </section>
+
+  <!-- ====================== PRÉDICTION ====================== -->
+  <section id="predict" role="tabpanel" aria-labelledby="tab-predict" tabindex="0">
+    <div class="card">
+      <h2>Prédiction du marché et des actions à venir du robot</h2>
+      <p class="hint">Cette projection est <b>100 % consultative</b> : le robot ne l'utilise jamais pour passer ses ordres. Elle croise les analyses du <b>LLM d'actualités</b>, la <b>mémoire des marchés passés</b> (volatilité et grands krachs) et la simulation des <b>4 stratégies</b> sur plusieurs semaines à plusieurs mois.</p>
+      <div class="row row-end">
+        <div>
+          <label for="pred-strategy">Stratégie principale mise en avant</label>
+          <select id="pred-strategy"></select>
+        </div>
+        <div>
+          <label for="pred-horizon">Horizon de prédiction</label>
+          <select id="pred-horizon">
+            <option value="21">1 mois (~4 semaines / 21 séances)</option>
+            <option value="63" selected>3 mois (~13 semaines / 63 séances)</option>
+            <option value="126">6 mois (~26 semaines / 126 séances)</option>
+          </select>
+        </div>
+      </div>
+      <div class="hint-tight">
+        <label for="pred-symbols">Actions analysées (séparées par des virgules)</label>
+        <input id="pred-symbols" placeholder="NVDA, AMD, AVGO, MSFT, AMZN">
+      </div>
+      <div class="actions">
+        <button class="primary" id="btn-predict" type="button">Calculer la prédiction</button>
+      </div>
+      <div class="msg" id="pred-msg" role="status" aria-live="polite"></div>
+    </div>
+    <div id="pred-result" aria-live="polite"></div>
   </section>
 
   <!-- ====================== PILOTER ====================== -->

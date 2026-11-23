@@ -32,6 +32,7 @@ from trading_bot.data.loader import (
     DataError,
     drop_incomplete_bar,
     momentum_zscores,
+    trend_regime,
 )
 from trading_bot.data.news_sentiment import NewsAssessment, NewsSentimentAnalyzer
 from trading_bot.execution.alpaca_client import (
@@ -39,6 +40,8 @@ from trading_bot.execution.alpaca_client import (
     BrokerError,
     MarketStatus,
     OrderReceipt,
+    OrderRejectedError,
+    OrderTimeoutError,
 )
 from trading_bot.history import HistoryStore
 from trading_bot.notifications import (
@@ -57,7 +60,7 @@ from trading_bot.risk.engine import (
     RiskEngine,
     Side,
 )
-from trading_bot.state import AuditLog, StateStore, utc_now
+from trading_bot.state import AuditLog, ExecutionLock, StateStore, utc_now
 from trading_bot.strategies.base import Signal, SignalType, Strategy, StrategyError
 from trading_bot.strategies.donchian_breakout import (
     DonchianBreakoutStrategy,
@@ -224,6 +227,25 @@ def build_strategy(
     raise ConfigurationError(
         f"stratégie inconnue: {name!r} (choix: {', '.join(STRATEGY_NAMES)})"
     )
+
+
+def ancillary_defensive_symbols(strategy: Strategy, settings: Settings) -> list[str]:
+    """Symboles défensifs (Bouclier ou poche de repli) requis pour une stratégie.
+
+    Source unique partagée par la CLI (``cmd_backtest``), l'interface web
+    (``_run_backtest``) et la prédiction.
+    """
+    ancillary: list[str] = []
+    shield_symbol = getattr(getattr(strategy, "params", None), "shield_symbol", None)
+    if isinstance(shield_symbol, str) and shield_symbol:
+        ancillary.append(shield_symbol)
+    elif settings.safe_haven_enabled:
+        ancillary.extend(settings.safe_haven_symbols)
+    return [
+        sym
+        for sym in dict.fromkeys(ancillary)
+        if sym and sym != settings.benchmark_symbol
+    ]
 
 
 def _inject_benchmark(
@@ -580,7 +602,28 @@ class TradingBot:
         self._sleep = sleep
         self._risk = RiskEngine(settings.risk)
         self._state = self._state_store.load()
+        self._lock = ExecutionLock(settings.state_dir / "bot.lock")
         self._logger = LOGGER
+
+    @staticmethod
+    def _populate_report_account(report: CycleReport, account: AccountState) -> None:
+        """Remplit les champs de synthèse du compte et des positions dans ``report``."""
+        report.equity = account.equity
+        report.cash = account.cash
+        report.positions_count = len(account.positions)
+        report.positions = [
+            {
+                "symbol": p.symbol,
+                "qty": p.qty,
+                "avg_entry_price": p.avg_entry_price,
+                "current_price": p.current_price,
+                "stop_price": p.stop_price,
+                "market_value": p.market_value,
+                "unrealized_pnl": p.unrealized_pnl,
+            }
+            for p in account.positions.values()
+        ]
+        report.unrealized_pnl = sum(p.unrealized_pnl for p in account.positions.values())
 
     @property
     def risk(self) -> RiskEngine:
@@ -617,7 +660,7 @@ class TradingBot:
             self._logger.info("boucle arrêtée")
 
     def run_once(self, *, source: str | None = None) -> CycleReport:
-        """Exécute un cycle et l'inscrit dans l'historique.
+        """Exécute un cycle et l'inscrit dans l'historique sous verrou inter-processus.
 
         Args:
             source: Origine consignée dans l'historique (``timer``, ``gui`` ou
@@ -626,14 +669,16 @@ class TradingBot:
         Returns:
             Le rapport du cycle.
         """
-        report = self._execute_cycle()
-        entry = report.to_dict()
-        entry["dry_run"] = self._settings.dry_run
-        self._history.record(entry, source=source or _detect_history_source())
-        return report
+        with self._lock.acquire(blocking=True):
+            self._state = self._state_store.load()
+            report = self._execute_cycle()
+            entry = report.to_dict()
+            entry["dry_run"] = self._settings.dry_run
+            self._history.record(entry, source=source or _detect_history_source())
+            return report
 
     def run_watch_only(self, *, source: str | None = None) -> CycleReport:
-        """Exécute une passe de vigie horaire (stops et news) et l'inscrit dans l'historique.
+        """Exécute une passe de vigie horaire (stops et news) sous verrou inter-processus.
 
         Args:
             source: Origine consignée (par défaut 'watch_only').
@@ -641,11 +686,13 @@ class TradingBot:
         Returns:
             Le rapport de vigie.
         """
-        report = self._execute_watch_only()
-        entry = report.to_dict()
-        entry["dry_run"] = self._settings.dry_run
-        self._history.record(entry, source=source or "watch_only")
-        return report
+        with self._lock.acquire(blocking=True):
+            self._state = self._state_store.load()
+            report = self._execute_watch_only()
+            entry = report.to_dict()
+            entry["dry_run"] = self._settings.dry_run
+            self._history.record(entry, source=source or "watch_only")
+            return report
 
     def _execute_watch_only(self) -> CycleReport:
         """Mode vigie horaire : surveillance des stops 1Day et panic exits news sans nouveaux achats."""
@@ -687,24 +734,7 @@ class TradingBot:
             self._logger.critical("CIRCUIT BREAKER (%s): %s", halt.scope.value, halt.reason)
             self._flatten(account, {}, now, report)
             self._persist(account)
-            report.equity = account.equity
-            report.cash = account.cash
-            report.positions_count = len(account.positions)
-            report.positions = [
-                {
-                    "symbol": p.symbol,
-                    "qty": p.qty,
-                    "avg_entry_price": p.avg_entry_price,
-                    "current_price": p.current_price,
-                    "stop_price": p.stop_price,
-                    "market_value": p.market_value,
-                    "unrealized_pnl": p.unrealized_pnl,
-                }
-                for p in account.positions.values()
-            ]
-            report.unrealized_pnl = sum(
-                p.unrealized_pnl for p in account.positions.values()
-            )
+            self._populate_report_account(report, account)
             self._notify(report)
             return report
 
@@ -806,22 +836,7 @@ class TradingBot:
 
         self._recompute_equity(account, marks)
         self._persist(account)
-        report.equity = account.equity
-        report.cash = account.cash
-        report.positions_count = len(account.positions)
-        report.positions = [
-            {
-                "symbol": p.symbol,
-                "qty": p.qty,
-                "avg_entry_price": p.avg_entry_price,
-                "current_price": p.current_price,
-                "stop_price": p.stop_price,
-                "market_value": p.market_value,
-                "unrealized_pnl": p.unrealized_pnl,
-            }
-            for p in account.positions.values()
-        ]
-        report.unrealized_pnl = sum(p.unrealized_pnl for p in account.positions.values())
+        self._populate_report_account(report, account)
         if report.orders:
             self._notify(report)
         return report
@@ -871,13 +886,11 @@ class TradingBot:
         try:
             benchmark_bars = self._fetch_complete_bars(benchmark_symbol, now)
             _inject_benchmark(self._strategy, benchmark_bars, benchmark_symbol)
-            close = benchmark_bars["close"].astype(float)
             sma_period = self._risk.config.regime_sma_period
-            if len(close) >= sma_period:
-                sma = float(close.rolling(sma_period).mean().iloc[-1])
-                last_close = float(close.iloc[-1])
-                bull_market = last_close > sma
-                bear_market = last_close <= sma
+            if len(benchmark_bars) >= sma_period:
+                regime_series = trend_regime(benchmark_bars, sma_length=sma_period)
+                bull_market = bool(regime_series.iloc[-1])
+                bear_market = not bull_market
             else:
                 bull_market = False
                 bear_market = False
@@ -916,14 +929,7 @@ class TradingBot:
             | shield_sleeve
             | set(account.positions)
         )
-        bars_by_symbol: dict[str, BarFrame] = {}
-        for symbol in universe:
-            try:
-                bars_by_symbol[symbol] = self._fetch_complete_bars(symbol, now)
-            except (DataError, BrokerError) as exc:
-                report.errors.append(_symbol_message(symbol, exc))
-                self._logger.warning("téléchargement %s ignoré: %s", symbol, exc)
-                continue
+        bars_by_symbol = self._fetch_universe_bars(universe, now, report)
 
         if hasattr(self._strategy, "set_universe"):
             self._strategy.set_universe(bars_by_symbol)
@@ -946,24 +952,7 @@ class TradingBot:
         if halt is not None:
             self._flatten(account, marks, now, report)
             self._persist(account)
-            report.equity = account.equity
-            report.cash = account.cash
-            report.positions_count = len(account.positions)
-            report.positions = [
-                {
-                    "symbol": p.symbol,
-                    "qty": p.qty,
-                    "avg_entry_price": p.avg_entry_price,
-                    "current_price": p.current_price,
-                    "stop_price": p.stop_price,
-                    "market_value": p.market_value,
-                    "unrealized_pnl": p.unrealized_pnl,
-                }
-                for p in account.positions.values()
-            ]
-            report.unrealized_pnl = sum(
-                p.unrealized_pnl for p in account.positions.values()
-            )
+            self._populate_report_account(report, account)
             self._notify(report)
             return report
 
@@ -1076,31 +1065,36 @@ class TradingBot:
             atr = entry_signal.indicators["atr"]
             price = marks.get(symbol, entry_signal.price)
 
-            # Auto-Unwind de repli si cash insuffisant pour l'ordre offensif validé
-            if self._settings.safe_haven_enabled and not self._risk.bear_market:
+            # Auto-Unwind de repli (ou du Bouclier en reprise haussière) si cash insuffisant
+            can_unwind = self._settings.safe_haven_enabled or sword is not None
+            if can_unwind and not self._risk.bear_market:
                 news_item = assessments.get(symbol)
                 if not (news_item and self._risk.news_vetoes_entry(news_item)):
-                    stop_distance = atr * self._risk.config.atr_stop_multiple
-                    risk_budget = account.equity * self._risk.config.risk_per_trade_pct
-                    qty_by_risk = risk_budget / stop_distance
-                    gross_rem = max(
-                        0.0,
-                        account.equity * self._risk.effective_gross_cap_pct()
-                        - account.gross_exposure,
+                    if sword is not None:
+                        target_notional = account.equity * (
+                            sword.sword_allocation_pct / max(1, sword.sword_top_n)
+                        )
+                    else:
+                        stop_distance = atr * self._risk.config.atr_stop_multiple
+                        risk_budget = account.equity * self._risk.config.risk_per_trade_pct
+                        qty_by_risk = risk_budget / stop_distance
+                        gross_rem = max(
+                            0.0,
+                            account.equity * self._risk.effective_gross_cap_pct()
+                            - account.gross_exposure,
+                        )
+                        notional_cap = min(
+                            account.equity * self._risk.effective_position_cap_pct(),
+                            gross_rem,
+                        )
+                        target_notional = min(qty_by_risk * price, notional_cap)
+                    needed = self._risk.compute_unwind_needed(
+                        account, target_notional=target_notional
                     )
-                    notional_cap = min(
-                        account.equity * self._risk.effective_position_cap_pct(),
-                        gross_rem,
-                    )
-                    target_notional = min(qty_by_risk * price, notional_cap)
-                    cash_buffer = account.equity * self._risk.config.cash_buffer_pct
-                    usable_cash = max(
-                        0.0, min(account.cash - cash_buffer, account.buying_power)
-                    )
-                    if target_notional > usable_cash:
-                        needed = target_notional - usable_cash
+                    if needed > 0.0:
+                        extra = (sword.shield_symbol,) if sword is not None else ()
                         unwind_decisions = self._risk.evaluate_safe_haven_unwind(
-                            account, needed, marks, now=now
+                            account, needed, marks, now=now, extra_symbols=extra
                         )
                         for u_dec in unwind_decisions:
                             report.decisions.append(u_dec)
@@ -1149,16 +1143,24 @@ class TradingBot:
             self._execute_decision(decision, now, account, report)
 
         # Le Bouclier se finance après les entrées offensives : il récupère le
-        # cash que la sélection n'a pas engagé, jusqu'à son poids cible.
+        # cash que la sélection n'a pas engagé, jusqu'à son poids cible (ou
+        # jusqu'à 1 - cash_buffer en marché baissier).
         if sword is not None and sword.shield_allocation_pct > 0.0:
             shield_price = marks.get(sword.shield_symbol)
             if shield_price is not None:
+                full_defensive = self._risk.bear_market
+                target_shield_weight = (
+                    max(sword.shield_allocation_pct, 1.0 - self._risk.config.cash_buffer_pct)
+                    if full_defensive
+                    else sword.shield_allocation_pct
+                )
                 shield_decision = self._risk.evaluate_shield_allocation(
                     account,
                     symbol=sword.shield_symbol,
                     price=shield_price,
-                    target_weight=sword.shield_allocation_pct,
+                    target_weight=target_shield_weight,
                     now=now,
+                    allow_full_defensive=full_defensive,
                 )
                 if shield_decision is not None:
                     report.decisions.append(shield_decision)
@@ -1167,7 +1169,7 @@ class TradingBot:
                         self._logger.info(
                             "bouclier %s financé à %.0f%%: %s",
                             sword.shield_symbol,
-                            sword.shield_allocation_pct * 100,
+                            target_shield_weight * 100,
                             shield_decision.reason,
                         )
 
@@ -1198,23 +1200,10 @@ class TradingBot:
                     )
 
         self._recompute_equity(account, marks)
+        if not self._settings.dry_run:
+            self._state.last_full_cycle_date = session_date.isoformat()
         self._persist(account)
-        report.equity = account.equity
-        report.cash = account.cash
-        report.positions_count = len(account.positions)
-        report.positions = [
-            {
-                "symbol": p.symbol,
-                "qty": p.qty,
-                "avg_entry_price": p.avg_entry_price,
-                "current_price": p.current_price,
-                "stop_price": p.stop_price,
-                "market_value": p.market_value,
-                "unrealized_pnl": p.unrealized_pnl,
-            }
-            for p in account.positions.values()
-        ]
-        report.unrealized_pnl = sum(p.unrealized_pnl for p in account.positions.values())
+        self._populate_report_account(report, account)
         self._notify(report)
         return report
 
@@ -1287,6 +1276,55 @@ class TradingBot:
             halt_scope=halt_scope,
             halt_reason=self._state.halt_reason,
         )
+
+    def _fetch_universe_bars(
+        self,
+        universe: Sequence[str],
+        now: datetime,
+        report: CycleReport,
+    ) -> dict[str, BarFrame]:
+        """Télécharge les barres de l'univers (batch Alpaca si disponible, sinon unitaire)."""
+        bars_by_symbol: dict[str, BarFrame] = {}
+        batch_fetcher = getattr(self._bars, "fetch_bars_batch", None)
+        if callable(batch_fetcher) and len(universe) > 1:
+            try:
+                raw_batch, batch_errors = batch_fetcher(
+                    universe,
+                    timeframe=self._settings.timeframe,
+                    lookback_days=self._settings.lookback_days,
+                    now=now,
+                )
+                for sym, err in batch_errors.items():
+                    report.errors.append(err)
+                    self._logger.warning("téléchargement batch %s ignoré: %s", sym, err)
+                for sym, raw_bars in raw_batch.items():
+                    complete = drop_incomplete_bar(
+                        raw_bars,
+                        self._settings.timeframe,
+                        now,
+                        market_timezone=self._settings.market_timezone,
+                    )
+                    if len(complete) <= self._strategy.warmup_bars:
+                        msg = (
+                            f"{sym}: {len(complete)} barres complètes, "
+                            f"{self._strategy.warmup_bars + 1} requises"
+                        )
+                        report.errors.append(msg)
+                        self._logger.warning("téléchargement %s ignoré: %s", sym, msg)
+                        continue
+                    bars_by_symbol[sym] = complete
+                return bars_by_symbol
+            except BrokerError as exc:
+                self._logger.warning("repli sur téléchargement unitaire après échec batch: %s", exc)
+
+        for symbol in universe:
+            try:
+                bars_by_symbol[symbol] = self._fetch_complete_bars(symbol, now)
+            except (DataError, BrokerError) as exc:
+                report.errors.append(_symbol_message(symbol, exc))
+                self._logger.warning("téléchargement %s ignoré: %s", symbol, exc)
+                continue
+        return bars_by_symbol
 
     def _fetch_complete_bars(self, symbol: str, now: datetime) -> BarFrame:
         """Récupère les barres et retire la barre en cours de formation."""
@@ -1447,6 +1485,11 @@ class TradingBot:
                 decision.reason,
             )
             return False
+        if intent.client_order_id in self._state.submitted_client_order_ids:
+            message = f"{intent.symbol}: ordre {intent.client_order_id} déjà transmis (idempotence persistée)"
+            report.errors.append(message)
+            self._logger.warning("%s", message)
+            return False
         if not self._cancel_open_orders(intent.symbol, report):
             # Une jambe de stop ouverte chez le courtier pourrait vendre à
             # découvert (SELL) ou déclencher un rejet wash-trade (BUY) :
@@ -1454,10 +1497,41 @@ class TradingBot:
             return False
         try:
             receipt = self._broker.submit(intent, now=now)
+            self._state.submitted_client_order_ids = [
+                *self._state.submitted_client_order_ids,
+                intent.client_order_id,
+            ][-200:]
             report.orders.append(receipt)
             filled = self._broker.wait_for_fill(
                 receipt.order_id, timeout_seconds=_ORDER_FILL_TIMEOUT_SECONDS
             )
+        except (OrderTimeoutError, OrderRejectedError) as exc:
+            report.errors.append(f"{intent.symbol}: {exc}")
+            self._logger.error("échec d'exécution %s: %s", intent.symbol, exc)
+            partial = exc.receipt
+            if partial is not None and partial.filled_qty > 0.0:
+                self._logger.warning(
+                    "réconciliation d'un remplissage partiel %s (%.4f actions)",
+                    intent.symbol,
+                    partial.filled_qty,
+                )
+                self._apply_fill(account, intent, partial)
+                opened = account.positions.get(intent.symbol)
+                if opened is not None and opened.stop_price is not None:
+                    fill_price = (
+                        partial.avg_fill_price
+                        if partial.avg_fill_price is not None
+                        else opened.current_price
+                    )
+                    self._sync_broker_stop(opened, price=fill_price, now=now, report=report)
+                return True
+            if intent.side is Side.BUY:
+                existing = account.positions.get(intent.symbol)
+                if existing is not None and existing.stop_price is not None:
+                    self._sync_broker_stop(
+                        existing, price=existing.current_price, now=now, report=report
+                    )
+            return False
         except BrokerError as exc:
             report.errors.append(f"{intent.symbol}: {exc}")
             self._logger.error("échec d'exécution %s: %s", intent.symbol, exc)

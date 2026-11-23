@@ -350,8 +350,8 @@
 </main>
 
 <dialog id="modal-alpaca">
-  <h3>Connexion directe Alpaca (IEX)</h3>
-  <p class="small dialog-hint">Ces identifiants sont enregistrés dans votre navigateur (localStorage) et persistent entre les sessions. Ils ne sont jamais envoyés à GitHub. Cette page partage son origine avec vos autres projets GitHub Pages : n'y collez que des clés <b>paper</b>.</p>
+  <h3>Connexion directe Alpaca (WebSocket IEX)</h3>
+  <p class="small dialog-hint">Ces identifiants sont conservés uniquement le temps de cet onglet (<code>sessionStorage</code>) et effacés dès sa fermeture. Ils ne sont jamais envoyés à GitHub ni à aucun proxy tiers. N'y saisissez que des clés <b>paper</b>.</p>
   <label class="small">Clé API Alpaca (APCA-API-KEY-ID)</label>
   <input id="input-alpaca-key" class="dialog-input" type="text" placeholder="PK...">
   <label class="small">Clé secrète Alpaca (APCA-API-SECRET-KEY)</label>
@@ -655,121 +655,28 @@ async function load() {
   }
 }
 
-async function fetchQuote(symbol) {
-  const target = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d`;
-  const urls = [
-    `https://corsproxy.io/?url=${encodeURIComponent(target)}`,
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
-    target
-  ];
-  for (const u of urls) {
-    try {
-      const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 3000);
-      const res = await fetch(u, { signal: ctrl.signal });
-      clearTimeout(tid);
-      if (!res.ok) continue;
-      const json = await res.json();
-      const price = json?.chart?.result?.[0]?.meta?.regularMarketPrice;
-      if (typeof price === "number" && price > 0) return price;
-    } catch (_) {}
-  }
-  return null;
+function getSessionKey(name) {
+  try { return (sessionStorage.getItem(name) || "").trim(); } catch (_) { return ""; }
 }
-
-async function pollQuotesOnce() {
-  if (!currentReport || !currentReport.positions || !currentReport.positions.length) return;
-  const symbols = currentReport.positions.map((p) => p.symbol);
-  for (const sym of symbols) {
-    const p = await fetchQuote(sym);
-    if (p !== null) {
-      recordLivePrice(sym, p);
-    }
-  }
-}
-
-async function refreshAlpacaSnapshot() {
-  const key = (localStorage.getItem("alpaca_key") || "").trim();
-  const secret = (localStorage.getItem("alpaca_secret") || "").trim();
-  if (!key || !secret) {
-    await pollQuotesOnce();
-    recalculateAndRenderPositions();
-    return false;
-  }
-
-  const headers = {
-    "APCA-API-KEY-ID": key,
-    "APCA-API-SECRET-KEY": secret
-  };
-
+function setSessionKey(name, val) {
   try {
-    const accPromise = fetch("https://paper-api.alpaca.markets/v2/account", { headers })
-      .then((r) => r.ok ? r.json() : null)
-      .catch(() => null);
-
-    const posPromise = fetch("https://paper-api.alpaca.markets/v2/positions", { headers })
-      .then((r) => r.ok ? r.json() : null)
-      .catch(() => null);
-
-    const [accData, posData] = await Promise.all([accPromise, posPromise]);
-
-    if (!accData && !posData) {
-      await pollQuotesOnce();
-      recalculateAndRenderPositions();
-      return false;
-    }
-
-    if (accData && currentReport) {
-      if (accData.cash) currentReport.cash = parseFloat(accData.cash);
-      if (accData.equity) currentReport.equity = parseFloat(accData.equity);
-    }
-
-    if (Array.isArray(posData) && currentReport) {
-      currentReport.positions_count = posData.length;
-      const posMap = {};
-      posData.forEach((p) => {
-        const curPrice = parseFloat(p.current_price);
-        posMap[p.symbol] = {
-          symbol: p.symbol,
-          qty: parseFloat(p.qty),
-          avg_entry_price: parseFloat(p.avg_entry_price),
-          current_price: curPrice,
-          market_value: parseFloat(p.market_value),
-          unrealized_pnl: parseFloat(p.unrealized_pl),
-          stop_price: null
-        };
-        if (curPrice > 0) {
-          livePrices[p.symbol] = curPrice;
-        }
-      });
-
-      if (Array.isArray(currentReport.positions)) {
-        currentReport.positions.forEach((existing) => {
-          if (posMap[existing.symbol]) {
-            posMap[existing.symbol].stop_price = existing.stop_price;
-          }
-        });
-      }
-      currentReport.positions = Object.values(posMap);
-    }
-
-    recalculateAndRenderPositions();
-    $("#live-status-note").textContent = "Cotations : actualisées à l'instant depuis l'API Alpaca (" + new Date().toLocaleTimeString("fr-FR") + ").";
-    return true;
-  } catch (_) {
-    await pollQuotesOnce();
-    recalculateAndRenderPositions();
-    return false;
-  }
+    if (val) sessionStorage.setItem(name, val);
+    else sessionStorage.removeItem(name);
+  } catch (_) {}
 }
+// Nettoyage de sécurité : efface d'éventuelles anciennes clés persistées en localStorage.
+try {
+  localStorage.removeItem("alpaca_key");
+  localStorage.removeItem("alpaca_secret");
+} catch (_) {}
 
 function connectAlpacaWs(symbols) {
   if (alpacaWs) {
     try { alpacaWs.close(); } catch (_) {}
     alpacaWs = null;
   }
-  const key = (localStorage.getItem("alpaca_key") || "").trim();
-  const secret = (localStorage.getItem("alpaca_secret") || "").trim();
+  const key = getSessionKey("alpaca_key");
+  const secret = getSessionKey("alpaca_secret");
   if (!key || !secret || !symbols || !symbols.length) return false;
 
   try {
@@ -791,32 +698,23 @@ function connectAlpacaWs(symbols) {
               action: "subscribe",
               trades: symbols
             }));
-            $("#live-status-note").textContent = "Cotations : flux Alpaca connecté (cours réels négociés).";
+            $("#live-status-note").textContent = "Cotations : flux Alpaca WebSocket connecté (session courante).";
           } else if (m.T === "t" && m.S && typeof m.p === "number" && m.p > 0) {
             recordLivePrice(m.S, m.p);
           } else if (m.T === "error") {
             const isLimit = (m.code === 406 || String(m.msg).includes("limit"));
             $("#live-status-note").textContent = isLimit
-              ? "Alpaca : 1 seule connexion simultanée autorisée (déjà actif sur un autre appareil). Repli sur cotations de marché."
-              : ("Alpaca : " + (m.msg || m.code) + ". Repli sur cotations de marché.");
-            if (!quotePollInterval) {
-              quotePollInterval = setInterval(pollQuotesOnce, 3000);
-            }
+              ? "Alpaca : 1 seule connexion simultanée autorisée. Affichage basé sur stats.json."
+              : ("Alpaca : " + (m.msg || m.code) + ". Affichage basé sur stats.json.");
           }
         }
       } catch (_) {}
     };
     ws.onerror = () => {
-      $("#live-status-note").textContent = "Alpaca : flux interrompu, repli sur cotations de marché.";
-      if (!quotePollInterval) {
-        quotePollInterval = setInterval(pollQuotesOnce, 3000);
-      }
+      $("#live-status-note").textContent = "Alpaca : flux interrompu, affichage basé sur stats.json.";
     };
     ws.onclose = () => {
       alpacaWs = null;
-      if (liveActive && !quotePollInterval) {
-        quotePollInterval = setInterval(pollQuotesOnce, 3000);
-      }
     };
     return true;
   } catch (e) {
@@ -832,19 +730,16 @@ function setLive(active) {
   if (liveActive) {
     btn.classList.add("active");
     badge.style.display = "inline-block";
-    $("#live-status-note").textContent = "Cotations : recherche des cours en cours…";
 
     startRenderThrottler();
 
     const symbols = (currentReport && currentReport.positions ? currentReport.positions.map((p) => p.symbol) : []);
     const connected = connectAlpacaWs(symbols);
-    pollQuotesOnce();
-
-    if (!quotePollInterval && !connected) {
-      quotePollInterval = setInterval(pollQuotesOnce, 4000);
+    if (!connected) {
+      $("#live-status-note").textContent = "Cotations : dernier cycle publié dans stats.json (connectez des clés paper pour le flux IEX en direct).";
     }
     if (!liveInterval) {
-      liveInterval = setInterval(load, 10000);
+      liveInterval = setInterval(load, 15000);
     }
   } else {
     btn.classList.remove("active");
@@ -872,8 +767,8 @@ $("#toggle-live").addEventListener("click", () => {
 
 const modalAlpaca = $("#modal-alpaca");
 $("#btn-open-alpaca").addEventListener("click", () => {
-  $("#input-alpaca-key").value = localStorage.getItem("alpaca_key") || "";
-  $("#input-alpaca-secret").value = localStorage.getItem("alpaca_secret") || "";
+  $("#input-alpaca-key").value = getSessionKey("alpaca_key");
+  $("#input-alpaca-secret").value = getSessionKey("alpaca_secret");
   modalAlpaca.showModal();
 });
 
@@ -882,8 +777,8 @@ $("#btn-alpaca-close").addEventListener("click", () => {
 });
 
 $("#btn-alpaca-clear").addEventListener("click", () => {
-  localStorage.removeItem("alpaca_key");
-  localStorage.removeItem("alpaca_secret");
+  setSessionKey("alpaca_key", "");
+  setSessionKey("alpaca_secret", "");
   $("#input-alpaca-key").value = "";
   $("#input-alpaca-secret").value = "";
   if (alpacaWs) {
@@ -898,9 +793,9 @@ $("#btn-alpaca-save").addEventListener("click", () => {
   const key = $("#input-alpaca-key").value.trim();
   const secret = $("#input-alpaca-secret").value.trim();
   if (key && secret) {
-    localStorage.setItem("alpaca_key", key);
-    localStorage.setItem("alpaca_secret", secret);
-    $("#live-status-note").textContent = "Cotations : identifiants Alpaca enregistrés.";
+    setSessionKey("alpaca_key", key);
+    setSessionKey("alpaca_secret", secret);
+    $("#live-status-note").textContent = "Cotations : identifiants Alpaca enregistrés pour cette session.";
     if (liveActive) {
       const symbols = (currentReport && currentReport.positions ? currentReport.positions.map((p) => p.symbol) : []);
       connectAlpacaWs(symbols);
@@ -916,15 +811,13 @@ $("#btn-refresh").addEventListener("click", async () => {
   btn.textContent = "Actualisation…";
   try {
     await load();
-    await refreshAlpacaSnapshot();
   } finally {
     btn.disabled = false;
     btn.textContent = original;
   }
 });
 
-load().then(async () => {
-  await refreshAlpacaSnapshot();
+load().then(() => {
   setLive(true);
 });
 </script>

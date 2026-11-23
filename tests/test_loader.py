@@ -231,3 +231,22 @@ def test_cached_provider_round_trip_is_lossless(tmp_path, bars_factory) -> None:
     first = provider.fetch("TEST", START, END, "1d")
     second = provider.fetch("TEST", START, END, "1d")
     assert np.array_equal(first.to_numpy(dtype=float), second.to_numpy(dtype=float))
+
+
+def test_cached_provider_normalizes_daily_cache_key_by_day(
+    tmp_path, bars_factory
+) -> None:
+    """Deux requêtes 1d à des minutes différentes du même jour partagent le même CSV."""
+    stub = _CountingProvider(bars_factory(np.linspace(100.0, 120.0, 40)))
+    provider = CachedProvider(stub, tmp_path / "cache")
+    t1_start = datetime(2024, 1, 1, 9, 15, tzinfo=UTC)
+    t1_end = datetime(2024, 6, 1, 14, 10, tzinfo=UTC)
+    t2_start = datetime(2024, 1, 1, 18, 45, tzinfo=UTC)
+    t2_end = datetime(2024, 6, 1, 21, 55, tzinfo=UTC)
+
+    provider.fetch("TEST", t1_start, t1_end, "1d")
+    provider.fetch("TEST", t2_start, t2_end, "1d")
+    assert stub.calls == 1
+    assert provider.cache_path("TEST", t1_start, t1_end, "1d") == provider.cache_path(
+        "TEST", t2_start, t2_end, "1d"
+    )

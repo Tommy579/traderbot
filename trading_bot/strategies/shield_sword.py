@@ -155,10 +155,9 @@ class ShieldSwordStrategy(Strategy):
         self, as_of: date | datetime | pd.Timestamp
     ) -> tuple[int, int]:
         """Retourne (jours_calendaires, séances_ouvrées) d'ici le prochain rebalancement."""
-        if isinstance(as_of, (datetime, pd.Timestamp)):
-            cur_date = as_of.date()
-        else:
-            cur_date = as_of
+        cur_date = (
+            as_of.date() if isinstance(as_of, (datetime, pd.Timestamp)) else as_of
+        )
         target = self.next_rebalance_date(cur_date)
         cal_days = max(0, (target - cur_date).days)
         b_days = sum(

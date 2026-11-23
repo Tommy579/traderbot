@@ -38,6 +38,7 @@ from trading_bot.risk.engine import (
     RiskDecision,
     RiskEngine,
 )
+from trading_bot.state import ExecutionLock
 
 LOGGER = logging.getLogger(__name__)
 
@@ -219,6 +220,7 @@ class WithdrawalService:
         self._audit = audit
         self._env_path = env_path or (PROJECT_ROOT / ".env")
         self._clock = clock
+        self._lock = ExecutionLock(settings.state_dir / "bot.lock")
 
     # ------------------------------------------------------------------
     # État du compte
@@ -278,24 +280,25 @@ class WithdrawalService:
             ValueError: symbole absent du portefeuille, montant ou pourcentage
                 invalides, prix indisponible.
         """
-        account = self.load_account()
-        normalized = symbol.strip().upper()
-        if normalized not in account.positions:
-            raise ValueError(f"le symbole {normalized} n'est pas en portefeuille")
-        position = account.positions[normalized]
-        price = position.current_price
-        if price <= 0 or not math.isfinite(price):
-            raise ValueError(f"prix introuvable pour {normalized}")
+        with self._lock.acquire(blocking=True):
+            account = self.load_account()
+            normalized = symbol.strip().upper()
+            if normalized not in account.positions:
+                raise ValueError(f"le symbole {normalized} n'est pas en portefeuille")
+            position = account.positions[normalized]
+            price = position.current_price
+            if price <= 0 or not math.isfinite(price):
+                raise ValueError(f"prix introuvable pour {normalized}")
 
-        qty = self._quantity_for(position, price=price, amount=amount, pct=pct)
-        result = self._sell(
-            account, position, qty=qty, price=price, reason="manual_withdrawal"
-        )
-        if result.fills:
-            self._persist_stops(account)
-        result.cash = account.cash
-        self._audit_summary("manual_withdrawal", normalized, result)
-        return result
+            qty = self._quantity_for(position, price=price, amount=amount, pct=pct)
+            result = self._sell(
+                account, position, qty=qty, price=price, reason="manual_withdrawal"
+            )
+            if result.fills:
+                self._persist_stops(account)
+            result.cash = account.cash
+            self._audit_summary("manual_withdrawal", normalized, result)
+            return result
 
     def withdraw_free_cash(self, target_cash: float) -> WithdrawalResult:
         """Libère du cash jusqu'à ``target_cash`` et sanctuarise ce plancher.
@@ -310,59 +313,60 @@ class WithdrawalService:
         if not math.isfinite(target_cash) or target_cash <= 0:
             raise ValueError("le montant free-cash doit être strictement positif")
 
-        account = self.load_account()
-        result = WithdrawalResult(floor=target_cash)
-        needed = target_cash - account.cash
-        LOGGER.info(
-            "retrait global : cash actuel=%.2f$, cible=%.2f$, besoin=%.2f$",
-            account.cash,
-            target_cash,
-            max(0.0, needed),
-        )
-        if needed > 0:
-            safe_havens = set(self._settings.safe_haven_symbols)
-            for symbol in [
-                s for s in self._settings.safe_haven_symbols if s in account.positions
-            ]:
-                if needed <= 0:
-                    break
-                needed -= self._drain(
-                    account, symbol, needed, result, "safe_haven_withdrawal"
-                )
-
+        with self._lock.acquire(blocking=True):
+            account = self.load_account()
+            result = WithdrawalResult(floor=target_cash)
+            needed = target_cash - account.cash
+            LOGGER.info(
+                "retrait global : cash actuel=%.2f$, cible=%.2f$, besoin=%.2f$",
+                account.cash,
+                target_cash,
+                max(0.0, needed),
+            )
             if needed > 0:
-                offensives = [
-                    position
-                    for symbol, position in account.positions.items()
-                    if symbol not in safe_havens and position.unrealized_pnl_pct > 0
-                ]
-                offensives.sort(key=lambda item: item.unrealized_pnl_pct, reverse=True)
-                for position in offensives:
+                safe_havens = set(self._settings.safe_haven_symbols)
+                for symbol in [
+                    s for s in self._settings.safe_haven_symbols if s in account.positions
+                ]:
                     if needed <= 0:
                         break
                     needed -= self._drain(
-                        account, position.symbol, needed, result, "gain_trim_withdrawal"
+                        account, symbol, needed, result, "safe_haven_withdrawal"
                     )
 
-        if not self._settings.dry_run:
-            update_env_file(
-                self._env_path, {"WITHDRAWABLE_CASH_FLOOR_USD": f"{target_cash:.2f}"}
-            )
-            LOGGER.info(
-                "plancher WITHDRAWABLE_CASH_FLOOR_USD mis à jour à %.2f$ dans %s",
-                target_cash,
-                self._env_path,
-            )
-            self._persist_stops(account)
-        else:
-            LOGGER.info(
-                "dry-run : plancher WITHDRAWABLE_CASH_FLOOR_USD serait mis à jour à %.2f$",
-                target_cash,
-            )
+                if needed > 0:
+                    offensives = [
+                        position
+                        for symbol, position in account.positions.items()
+                        if symbol not in safe_havens and position.unrealized_pnl_pct > 0
+                    ]
+                    offensives.sort(key=lambda item: item.unrealized_pnl_pct, reverse=True)
+                    for position in offensives:
+                        if needed <= 0:
+                            break
+                        needed -= self._drain(
+                            account, position.symbol, needed, result, "gain_trim_withdrawal"
+                        )
 
-        result.cash = account.cash
-        self._audit_summary("free_cash_withdrawal", "global", result)
-        return result
+            if not self._settings.dry_run:
+                update_env_file(
+                    self._env_path, {"WITHDRAWABLE_CASH_FLOOR_USD": f"{target_cash:.2f}"}
+                )
+                LOGGER.info(
+                    "plancher WITHDRAWABLE_CASH_FLOOR_USD mis à jour à %.2f$ dans %s",
+                    target_cash,
+                    self._env_path,
+                )
+                self._persist_stops(account)
+            else:
+                LOGGER.info(
+                    "dry-run : plancher WITHDRAWABLE_CASH_FLOOR_USD serait mis à jour à %.2f$",
+                    target_cash,
+                )
+
+            result.cash = account.cash
+            self._audit_summary("free_cash_withdrawal", "global", result)
+            return result
 
     # ------------------------------------------------------------------
     # Détail

@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pandas as pd
 import pytest
-from alpaca.data.enums import DataFeed
+from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.trading.enums import AssetClass, OrderSide, OrderStatus
 
 from trading_bot.config import Settings
@@ -240,14 +240,10 @@ def test_wait_for_fill_times_out(
         client.wait_for_fill(receipt.order_id, timeout_seconds=0.05, poll_seconds=0.01)
 
 
-def test_market_clock_and_emergency_methods(
-    client: AlpacaPaperClient, fake_trading: FakeTradingClient
+def test_market_clock_is_open(
+    client: AlpacaPaperClient,
 ) -> None:
     assert client.is_market_open() is True
-    client.cancel_all_orders()
-    client.close_all_positions()
-    assert fake_trading.cancelled == 1
-    assert fake_trading.closed == 1
 
 
 def test_market_status_open(client: AlpacaPaperClient) -> None:
@@ -503,8 +499,101 @@ def test_cancel_open_orders_fails_when_order_remains_open(
     )
 
     with pytest.raises(BrokerError, match="encore ouverts"):
-        client.cancel_open_orders("AAPL")
+        client.cancel_open_orders("AAPL", timeout_seconds=0.0)
     assert reads == 2
+
+
+def test_fetch_bars_and_batch_use_adjustment_all(
+    settings: Settings, fake_trading: FakeTradingClient
+) -> None:
+    """Les barres Alpaca doivent être ajustées des splits et dividendes."""
+    data = FakeDataClient()
+    client = AlpacaPaperClient(settings, trading_client=fake_trading, data_client=data)
+
+    bars = client.fetch_bars("AAPL", timeframe="1Day", lookback_days=30, now=NOW)
+    assert not bars.empty
+    assert data.last_request is not None
+    assert data.last_request.adjustment is Adjustment.ALL
+
+    batch, errors = client.fetch_bars_batch(
+        ["AAPL", "MISSING"], timeframe="1Day", lookback_days=30, now=NOW
+    )
+    assert "AAPL" in batch
+    assert "MISSING" in errors
+    assert data.last_request.adjustment is Adjustment.ALL
+
+
+def test_cancel_open_orders_polls_until_async_cancel_completes(
+    settings: Settings, fake_trading: FakeTradingClient
+) -> None:
+    """Alpaca annule de façon asynchrone : la 2e relecture qui voit 0 ordre doit réussir."""
+    reads = 0
+
+    def fake_get_orders(req):
+        nonlocal reads
+        reads += 1
+        if reads <= 2:
+            return [SimpleNamespace(id="ord-async")]
+        return []
+
+    fake_trading.get_orders = fake_get_orders  # type: ignore[attr-defined]
+    fake_trading.cancel_order_by_id = lambda order_id: None  # type: ignore[attr-defined]
+    client = AlpacaPaperClient(
+        settings, trading_client=fake_trading, data_client=FakeDataClient()
+    )
+
+    cancelled = client.cancel_open_orders(
+        "AAPL", timeout_seconds=1.0, poll_seconds=0.01
+    )
+    assert cancelled == 1
+    assert reads == 3
+
+
+def test_transient_read_error_is_retried(
+    settings: Settings, fake_trading: FakeTradingClient
+) -> None:
+    """Une erreur transitoire 429/503 sur get_account est retentée automatiquement."""
+    attempts = 0
+    real_get_account = fake_trading.get_account
+
+    def flaky():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("timed out")
+        return real_get_account()
+
+    fake_trading.get_account = flaky  # type: ignore[method-assign]
+    client = AlpacaPaperClient(
+        settings, trading_client=fake_trading, data_client=FakeDataClient()
+    )
+    snap = client.get_account()
+    assert attempts == 2
+    assert snap.equity == pytest.approx(100_000.50)
+
+
+def test_wait_for_fill_attaches_partial_receipt_on_timeout(
+    settings: Settings, fake_trading: FakeTradingClient
+) -> None:
+    """Un timeout avec remplissage partiel expose le reçu pour réconciliation."""
+    fake_trading.status = OrderStatus.PARTIALLY_FILLED
+    orig_submit = fake_trading.submit_order
+
+    def submit_partial(order_data):
+        order = orig_submit(order_data)
+        order.filled_qty = "5"
+        order.filled_avg_price = "101.00"
+        return order
+
+    fake_trading.submit_order = submit_partial  # type: ignore[method-assign]
+    client = AlpacaPaperClient(
+        settings, trading_client=fake_trading, data_client=FakeDataClient()
+    )
+    receipt = client.submit(make_intent(), now=NOW)
+    with pytest.raises(OrderTimeoutError) as exc_info:
+        client.wait_for_fill(receipt.order_id, timeout_seconds=0.04, poll_seconds=0.01)
+    assert exc_info.value.receipt is not None
+    assert exc_info.value.receipt.filled_qty == pytest.approx(5.0)
 
 
 class _AssetNotFound(Exception):

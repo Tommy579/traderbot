@@ -656,6 +656,69 @@ def test_cash_sweep_never_targets_the_shield_symbol() -> None:
     assert {decision.intent.symbol for decision in decisions if decision.intent} == {"KO"}
 
 
+def test_shield_allocation_allows_full_defensive_in_bear_market() -> None:
+    """En marché baissier, le Bouclier peut monter jusqu'à 1 - cash_buffer."""
+    engine = RiskEngine(
+        RiskConfig(
+            shield_symbol="SGOV",
+            cash_buffer_pct=0.10,
+            max_gross_exposure_pct=0.80,
+        )
+    )
+    engine.set_market_regime(bull_market=False, bear_market=True)
+    account = make_account(100_000.0, cash=100_000.0)
+
+    decision = engine.evaluate_shield_allocation(
+        account,
+        symbol="SGOV",
+        price=100.0,
+        target_weight=0.90,
+        now=NOW,
+        allow_full_defensive=True,
+    )
+    assert decision is not None and decision.approved and decision.intent is not None
+    assert decision.intent.qty == pytest.approx(900.0)
+
+
+def test_evaluate_entry_preserves_target_weight_binding_and_rejects_sub_unit_stop() -> None:
+    """Le motif 'entrée target_weight' est conservé et < 1 action avec stop GTC est refusé."""
+    engine = RiskEngine()
+    account = make_account(100_000.0, cash=100_000.0)
+    ok = engine.evaluate_entry(
+        symbol="AAPL",
+        price=100.0,
+        atr=2.0,
+        account=account,
+        now=NOW,
+        session_date=SESSION,
+        target_weight=0.10,
+    )
+    assert ok.approved and ok.intent is not None
+    assert ok.intent.reason == "entrée target_weight"
+
+    # Budget très petit sur titre cher -> qty < 1 action entière -> refus GTC
+    tiny = make_account(1_000.0, cash=1_000.0)
+    rejected = engine.evaluate_entry(
+        symbol="COST",
+        price=900.0,
+        atr=20.0,
+        account=tiny,
+        now=NOW,
+        session_date=SESSION,
+    )
+    assert not rejected.approved
+    assert rejected.code is RejectionCode.BELOW_MIN_NOTIONAL
+
+
+def test_execution_lock_refuses_concurrent_non_blocking_acquire(tmp_path) -> None:
+    """ExecutionLock empêche deux opérations concurrentes sur le même state_dir."""
+    from trading_bot.state import ExecutionLock, LockBusyError
+
+    lock = ExecutionLock(tmp_path / "bot.lock")
+    with lock.acquire(blocking=True), pytest.raises(LockBusyError), lock.acquire(blocking=False):
+        pass
+
+
 def test_rebase_equity_reference_clears_a_phantom_drawdown() -> None:
     """Après un retrait de cash externe, le drawdown mesuré doit repartir de zéro."""
     engine = RiskEngine(RiskConfig(max_daily_loss_pct=0.03, max_drawdown_pct=0.15))

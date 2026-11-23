@@ -575,3 +575,69 @@ def test_backtest_accepts_short_shield_history_below_warmup(bars_factory) -> Non
     )
 
     assert result.final_positions.get("SGOV", 0.0) > 400.0
+
+
+def test_benchmark_buy_hold_excludes_warmup_period(bars_factory) -> None:
+    """benchmark_buy_hold et basket_buy_hold doivent porter sur start_date..fin uniquement."""
+    # Warmup de 60 barres en forte baisse (-40 %), puis 40 barres de hausse (+25 %).
+    warmup_prices = [100.0 * (0.9915**i) for i in range(60)]
+    sim_prices = [warmup_prices[-1] * (1.0057**i) for i in range(1, 41)]
+    bench = bars_factory(warmup_prices + sim_prices)
+    asset = bars_factory(warmup_prices + sim_prices)
+
+    start_ts = bench.index[60]
+    result = _runner().run({"AAPL": asset}, benchmark=bench, start_date=start_ts)
+
+    expected = float(bench["close"].iloc[-1] / bench["close"].loc[start_ts] - 1.0)
+    assert expected > 0.15
+    assert result.metrics["benchmark_buy_hold"] == pytest.approx(expected)
+    assert result.metrics["basket_buy_hold"] == pytest.approx(expected)
+
+
+def test_backtest_news_hook_vetoes_entry(bars_factory) -> None:
+    """Un score news <= news_veto_threshold bloque l'achat en backtest."""
+    from types import SimpleNamespace
+
+    bars = bars_factory([100.0] * 30, spread=0.2)
+    runner = BacktestRunner(
+        BuyOnceStrategy(buy_index=5, atr=1.0),
+        config=BacktestConfig(initial_equity=100_000.0),
+        risk_config=FAST_RISK,
+    )
+    veto_news = SimpleNamespace(sentiment_score=-0.75, is_critical_threat=False)
+    result = runner.run(
+        {"AAPL": bars},
+        news_hook=lambda sym, ts: veto_news,
+    )
+    assert result.metrics["open_positions_at_end"] == 0
+    assert result.metrics["entry_rejections"] >= 1
+
+
+def test_backtest_starts_from_initial_positions(bars_factory) -> None:
+    """BacktestRunner.run accepte un portefeuille initial (utilisé par la prédiction)."""
+    from trading_bot.risk.engine import Position
+
+    bars = bars_factory([100.0 + i for i in range(40)], spread=0.2)
+    runner = BacktestRunner(
+        BuyOnceStrategy(buy_index=999, atr=1.0),
+        config=BacktestConfig(initial_equity=100_000.0),
+        risk_config=FAST_RISK,
+    )
+    pos = Position(
+        symbol="AAPL",
+        qty=200.0,
+        avg_entry_price=100.0,
+        current_price=100.0,
+        stop_price=90.0,
+        initial_stop_price=90.0,
+    )
+    result = runner.run(
+        {"AAPL": bars},
+        initial_positions={"AAPL": pos},
+        initial_cash=80_000.0,
+    )
+    # Sans buy signal (buy_index=999), la hausse de +39 % sur les 200 actions
+    # détenues génère du gain et déclenche la prise de profit partielle +20 %.
+    assert result.metrics["final_equity"] > 105_000.0
+    assert result.metrics["total_return"] > 0.05
+    assert "partial_take_profit" in {t.exit_reason for t in result.trades}

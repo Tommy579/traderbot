@@ -44,6 +44,7 @@ from trading_bot.bot import (
     _build_notifier,
     _inject_benchmark,
     _symbol_message,
+    ancillary_defensive_symbols,
     build_strategy,
 )
 from trading_bot.clock import clock_offset_seconds, get_online_now
@@ -61,12 +62,14 @@ from trading_bot.data.loader import (
     drop_incomplete_bar,
     timeframe_interval,
 )
+from trading_bot.data.news_sentiment import NewsAssessment, NewsSentimentAnalyzer
 from trading_bot.execution.alpaca_client import AlpacaPaperClient, BrokerError
 from trading_bot.history import HistoryStore
 from trading_bot.main import _withdrawal_payload, apply_equity_rebase, news_effect_label
-from trading_bot.risk.engine import AccountState, Position, RiskEngine
-from trading_bot.state import AuditLog, StateStore
-from trading_bot.strategies.base import SignalType, StrategyError
+from trading_bot.prediction import build_market_prediction
+from trading_bot.risk.engine import Position, RiskEngine
+from trading_bot.state import AuditLog, LockBusyError, StateStore
+from trading_bot.strategies.base import StrategyError
 from trading_bot.web.jobs import JobManager
 from trading_bot.withdrawal import WithdrawalService
 
@@ -75,6 +78,7 @@ _MAX_BODY_BYTES = 1_000_000
 #: ``systemctl --user show`` : la page interroge le statut toutes les deux
 #: secondes, donc sans cache on forkerait un processus par seconde.
 _AUTOMATION_CACHE_TTL_SECONDS = 15.0
+_BROKER_STATUS_TTL_SECONDS = 5.0
 _automation_cache: tuple[float, dict[str, Any]] | None = None
 _automation_lock = threading.Lock()
 _CHART_POINTS = 240
@@ -147,8 +151,30 @@ class WebContext:
     jobs: JobManager
     backtest_lock: threading.Lock
     cycle_lock: threading.Lock = field(default_factory=threading.Lock)
+    predict_lock: threading.Lock = field(default_factory=threading.Lock)
     config_lock: threading.Lock = field(default_factory=threading.Lock)
     env_mtime: int | None = None
+    _broker_cache: tuple[int | None, AlpacaPaperClient] | None = None
+    _status_cache: tuple[float, dict[str, Any]] | None = None
+
+
+def _get_broker(context: WebContext, settings: Settings) -> AlpacaPaperClient:
+    """Réutilise le client Alpaca tant que la configuration ``.env`` n'a pas changé."""
+    if context.broker_factory is not _default_broker_factory:
+        return context.broker_factory(settings)
+    with context.config_lock:
+        cached = context._broker_cache
+        if cached is not None and cached[0] == context.env_mtime:
+            return cached[1]
+        broker = context.broker_factory(settings)
+        context._broker_cache = (context.env_mtime, broker)
+        return broker
+
+
+def _invalidate_status_cache(context: WebContext) -> None:
+    """Force le prochain ``/api/status`` à relire le compte chez Alpaca."""
+    with context.config_lock:
+        context._status_cache = None
 
 
 def _default_broker_factory(settings: Settings) -> AlpacaPaperClient:
@@ -460,21 +486,21 @@ def _run_backtest(
     )
     strategy = build_strategy(strategy_name, settings=settings)
     symbols = _tradable_symbols(symbols, settings.benchmark_symbol)
-    data = {
-        symbol: provider.fetch(symbol, fetch_start_dt, end_dt, interval)
-        for symbol in symbols
-    }
+    errors: list[str] = []
+    data: dict[str, Any] = {}
+    for symbol in symbols:
+        try:
+            data[symbol] = provider.fetch(symbol, fetch_start_dt, end_dt, interval)
+        except DataError as exc:
+            errors.append(_symbol_message(symbol, exc))
+    if not data:
+        detail = " ; ".join(errors) if errors else "aucun symbole exploitable"
+        raise DataError(f"Aucune donnée chargée pour le backtest ({detail}).")
     # Charge les actifs défensifs (Bouclier et poche de repli) pour que le
     # backtest finance les mêmes poches que le cycle live. Un actif inexistant
     # sur la fenêtre (ex. SGOV avant mai 2020) est ignoré sans bloquer le test.
-    ancillary: list[str] = []
-    shield_symbol = getattr(getattr(strategy, "params", None), "shield_symbol", None)
-    if isinstance(shield_symbol, str) and shield_symbol:
-        ancillary.append(shield_symbol)
-    elif settings.safe_haven_enabled:
-        ancillary.extend(settings.safe_haven_symbols)
-    for extra in dict.fromkeys(ancillary):
-        if extra in data or extra == settings.benchmark_symbol:
+    for extra in ancillary_defensive_symbols(strategy, settings):
+        if extra in data:
             continue
         try:
             data[extra] = provider.fetch(extra, fetch_start_dt, end_dt, interval)
@@ -534,7 +560,150 @@ def _run_backtest(
             {"date": halt.session_date.isoformat(), "reason": halt.reason}
             for halt in result.halts
         ],
+        "errors": errors,
     }
+
+
+def _load_cached_news_assessments(settings: Settings) -> dict[str, NewsAssessment]:
+    """Relit les derniers verdicts LLM persistés sur disque si l'API est inactive."""
+    path = settings.state_dir / "news_sentiment.json"
+    raw = NewsSentimentAnalyzer._read_json(path).get("assessments", {})
+    if not isinstance(raw, dict):
+        return {}
+    restored: dict[str, NewsAssessment] = {}
+    for sym, item in raw.items():
+        if not isinstance(item, dict):
+            continue
+        try:
+            restored[str(sym)] = NewsAssessment.from_dict(item)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return restored
+
+
+def _run_predict(
+    settings: Settings,
+    broker_factory: Callable[[Settings], AlpacaPaperClient],
+    strategy_name: str,
+    symbols: list[str],
+    horizon_days: int = 63,
+) -> dict[str, Any]:
+    """Prédiction multi-horizons purement informative (lecture seule).
+
+    Croise les notes du LLM d'actualités, la mémoire des marchés passés et
+    la projection des 4 stratégies du bot sans jamais passer d'ordre ni
+    modifier l'état du bot.
+    """
+    horizon = max(10, min(252, int(horizon_days)))
+    now = get_online_now()
+    errors: list[str] = []
+
+    if settings.benchmark_symbol in symbols:
+        errors.append(
+            f"{settings.benchmark_symbol} écarté de l'univers : il sert de référence"
+        )
+    tradable = _tradable_symbols(symbols, settings.benchmark_symbol)
+    if not tradable:
+        tradable = _tradable_symbols(settings.symbols, settings.benchmark_symbol)
+
+    all_symbols = list(dict.fromkeys(tradable))
+    for extra in [settings.risk.shield_symbol, *settings.safe_haven_symbols]:
+        if extra and extra != settings.benchmark_symbol and extra not in all_symbols:
+            all_symbols.append(extra)
+
+    broker: AlpacaPaperClient | None = None
+    initial_equity = settings.backtest.initial_equity
+    initial_cash: float | None = None
+    current_positions: dict[str, Position] = {}
+    try:
+        broker = broker_factory(settings)
+        snap = broker.get_account()
+        initial_equity = float(snap.equity)
+        initial_cash = float(snap.cash)
+        current_positions = dict(broker.get_positions())
+    except (ConfigurationError, BrokerError, DataError, OSError) as exc:
+        errors.append(f"compte courtier indisponible ({_friendly(exc)})")
+
+    lookback_days = max(settings.lookback_days, 450)
+    # Normalisation journalière UTC : un seul CSV en cache par symbole/jour.
+    end_dt = datetime.combine(now.date(), dt_time.min, tzinfo=UTC) + timedelta(days=1)
+    start_dt = end_dt - timedelta(days=lookback_days)
+    interval = timeframe_interval(settings.timeframe)
+    fallback_provider: MarketDataProvider | None = None
+
+    def _get_fallback() -> MarketDataProvider:
+        nonlocal fallback_provider
+        if fallback_provider is None:
+            fallback_provider = CachedProvider(
+                YFinanceProvider(), settings.state_dir / "cache"
+            )
+        return fallback_provider
+
+    def _fetch_bars(sym: str) -> Any:
+        if broker is not None:
+            try:
+                raw = broker.fetch_bars(
+                    sym,
+                    timeframe=settings.timeframe,
+                    lookback_days=lookback_days,
+                    now=now,
+                )
+                return drop_incomplete_bar(
+                    raw,
+                    settings.timeframe,
+                    now,
+                    market_timezone=settings.market_timezone,
+                )
+            except (DataError, BrokerError, StrategyError, KeyError):
+                pass
+        return _get_fallback().fetch(sym, start_dt, end_dt, interval)
+
+    benchmark_bars = None
+    try:
+        benchmark_bars = _fetch_bars(settings.benchmark_symbol)
+    except (DataError, BrokerError, StrategyError, KeyError) as exc:
+        errors.append(f"benchmark {settings.benchmark_symbol}: {exc}")
+
+    # Historique long (10 ans) du benchmark pour capturer les vrais krachs passés
+    # (Covid 2020, Bear 2022, corrections) via le cache journalier YFinance.
+    benchmark_long_bars = None
+    if interval in {"1d", "1Day"}:
+        long_start_dt = end_dt - timedelta(days=3650)
+        try:
+            benchmark_long_bars = _get_fallback().fetch(
+                settings.benchmark_symbol, long_start_dt, end_dt, interval
+            )
+        except (DataError, BrokerError, StrategyError, KeyError):
+            benchmark_long_bars = None
+
+    bars_by_symbol: dict[str, Any] = {}
+    for sym in all_symbols:
+        try:
+            bars_by_symbol[sym] = _fetch_bars(sym)
+        except (DataError, BrokerError, StrategyError, KeyError) as exc:
+            if sym in tradable:
+                errors.append(_symbol_message(sym, exc))
+
+    # Inclut le benchmark (SPY) dans la lecture news pour capter le risque macro.
+    news_targets = list(dict.fromkeys([settings.benchmark_symbol, *tradable]))
+    assessments = _assess_news(settings, news_targets, errors=errors)
+    if not assessments:
+        assessments = _load_cached_news_assessments(settings)
+
+    return build_market_prediction(
+        settings,
+        bars_by_symbol=bars_by_symbol,
+        benchmark_bars=benchmark_bars,
+        benchmark_long_bars=benchmark_long_bars,
+        news_assessments=assessments,
+        current_positions=current_positions,
+        initial_equity=initial_equity,
+        initial_cash=initial_cash,
+        primary_strategy=strategy_name,
+        horizon_days=horizon,
+        now=now,
+        errors=errors,
+    )
 
 
 def _run_cycle(
@@ -803,7 +972,10 @@ def _run_withdraw(
             f"(~{fill.cash_freed:.2f} $ dégagés)."
         )
         return payload
+    except LockBusyError as exc:
+        raise ValueError(str(exc)) from exc
     finally:
+        _invalidate_status_cache(context)
         context.cycle_lock.release()
 
 
@@ -986,18 +1158,37 @@ def _status_payload(context: WebContext) -> dict[str, Any]:
             "shield_allocation_pct": settings.shield_allocation_pct,
         },
     }
-    try:
-        broker = context.broker_factory(settings)
-        account = broker.get_account()
-        payload["account"] = {
-            "equity": account.equity,
-            "cash": account.cash,
-            "buying_power": account.buying_power,
-        }
-        payload["market_open"] = broker.is_market_open()
-        payload["positions"] = _positions_view(broker, settings)
-    except Exception as exc:  # noqa: BLE001 - le tableau de bord reste affichable
-        payload["error"] = _friendly(exc)
+    now_mono = time.monotonic()
+    broker_snapshot: dict[str, Any] | None = None
+    if context.broker_factory is _default_broker_factory:
+        with context.config_lock:
+            cached_status = context._status_cache
+            if (
+                cached_status is not None
+                and now_mono - cached_status[0] < _BROKER_STATUS_TTL_SECONDS
+            ):
+                broker_snapshot = dict(cached_status[1])
+
+    if broker_snapshot is None:
+        fresh_snap: dict[str, Any] = {}
+        try:
+            broker = _get_broker(context, settings)
+            account = broker.get_account()
+            fresh_snap["account"] = {
+                "equity": account.equity,
+                "cash": account.cash,
+                "buying_power": account.buying_power,
+            }
+            fresh_snap["market_open"] = broker.is_market_open()
+            fresh_snap["positions"] = _positions_view(broker, settings)
+        except Exception as exc:  # noqa: BLE001 - le tableau de bord reste affichable
+            fresh_snap["error"] = _friendly(exc)
+        broker_snapshot = fresh_snap
+        if context.broker_factory is _default_broker_factory and "error" not in fresh_snap:
+            with context.config_lock:
+                context._status_cache = (now_mono, dict(fresh_snap))
+
+    payload.update(broker_snapshot)
 
     state = StateStore(settings.state_dir / "state.json").load()
     payload["state"] = {
@@ -1178,6 +1369,34 @@ def build_handler(context: WebContext) -> type[BaseHTTPRequestHandler]:
                         settings, strategy, symbols, start, request.get("end")
                     ),
                     lock=context.backtest_lock,
+                )
+                return {"ok": True, "job": job.snapshot()}
+            if path == "/api/predict":
+                if "predict" in context.jobs.running_kinds:
+                    return {
+                        "ok": False,
+                        "error": "Une prédiction est déjà en cours de calcul.",
+                    }
+                strategy = str(request.get("strategy") or "shield_sword")
+                raw_symbols = request.get("symbols") or settings.symbols
+                if not isinstance(raw_symbols, list):
+                    raise ValueError("la liste de symboles est invalide")
+                symbols = [
+                    str(symbol).strip().upper()
+                    for symbol in raw_symbols
+                    if str(symbol).strip()
+                ]
+                try:
+                    horizon_days = int(request.get("horizon_days") or 63)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("L'horizon de prédiction est invalide.") from exc
+                job = context.jobs.submit(
+                    "predict",
+                    f"Prédiction {strategy}",
+                    lambda: _run_predict(
+                        settings, context.broker_factory, strategy, symbols, horizon_days
+                    ),
+                    lock=context.predict_lock,
                 )
                 return {"ok": True, "job": job.snapshot()}
             if path == "/api/cycle":

@@ -4,6 +4,8 @@
 [Unit]
 Description=TradingBot Alpaca - cycle de paper trading quotidien
 Documentation=file://@PROJECT_DIR@/README.md
+StartLimitBurst=3
+StartLimitIntervalSec=600
 
 [Service]
 Type=oneshot

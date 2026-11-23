@@ -36,6 +36,7 @@ from trading_bot.data.loader import (
     DataError,
     compute_atr,
     momentum_zscores,
+    trend_regime,
 )
 from trading_bot.risk.engine import (
     AccountState,
@@ -335,15 +336,18 @@ class _Simulation:
         self.entry_candidates += 1
         open_price = float(row["open"])
         decision_price = open_price * (1.0 + self.config.slippage_pct)
+        news = self.news_hook(symbol, timestamp) if self.news_hook is not None else None
         is_shield_asset = self.is_shield_sword and (
             symbol == self.shield_symbol or symbol in self.risk.config.safe_haven_symbols
         )
-        # Auto-unwind de la poche de repli avant une entrée offensive si le
-        # cash libre ne suffit pas (même logique que le cycle live dans bot.py).
+        # Auto-unwind de la poche de repli (ou du Bouclier en reprise haussière)
+        # avant une entrée offensive si le cash libre ne suffit pas.
+        can_unwind = self.risk.config.safe_haven_enabled or self.is_shield_sword
         if (
             not is_shield_asset
-            and self.risk.config.safe_haven_enabled
+            and can_unwind
             and not self.risk.bear_market
+            and not (news is not None and self.risk.news_vetoes_entry(news))
             and self.account.equity > 0.0
         ):
             if self.is_shield_sword:
@@ -362,14 +366,17 @@ class _Simulation:
                     gross_rem,
                 )
                 target_notional = min(qty_by_risk * decision_price, notional_cap)
-            cash_buffer = self.account.equity * self.risk.config.cash_buffer_pct
-            usable_cash = max(
-                0.0, min(self.account.cash - cash_buffer, self.account.buying_power)
+            needed = self.risk.compute_unwind_needed(
+                self.account, target_notional=target_notional
             )
-            if target_notional > usable_cash:
-                needed = target_notional - usable_cash
+            if needed > 0.0:
+                extra = (self.shield_symbol,) if self.is_shield_sword else ()
                 for unwind_dec in self.risk.evaluate_safe_haven_unwind(
-                    self.account, needed, self.marks, now=timestamp.to_pydatetime()
+                    self.account,
+                    needed,
+                    self.marks,
+                    now=timestamp.to_pydatetime(),
+                    extra_symbols=extra,
                 ):
                     if unwind_dec.intent is None:
                         continue
@@ -386,6 +393,7 @@ class _Simulation:
                 account=self.account,
                 now=timestamp.to_pydatetime(),
                 session_date=session_date,
+                news=news,
                 target_weight=(
                     self.sword_target_weight
                     if not is_shield_asset
@@ -405,6 +413,7 @@ class _Simulation:
                 account=self.account,
                 now=timestamp.to_pydatetime(),
                 session_date=session_date,
+                news=news,
             )
         if not decision.approved or decision.intent is None:
             self.entry_rejections += 1
@@ -627,15 +636,24 @@ class _Simulation:
                 self._execute_sell(decision, timestamp, price)
 
         # 3. Bouclier : financement du poids cible (pas de stop, pas de signal).
+        # En marché baissier (SPY <= SMA200), le Bouclier absorbe tout le
+        # capital disponible au-delà du cash buffer (jusqu'à 1 - cash_buffer).
         if self.is_shield_sword and self.shield_allocation_pct > 0.0:
             price = self.marks.get(self.shield_symbol, 0.0)
             if price > 0.0:
+                full_defensive = self.risk.bear_market
+                shield_weight = (
+                    max(self.shield_allocation_pct, 1.0 - self.risk.config.cash_buffer_pct)
+                    if full_defensive
+                    else self.shield_allocation_pct
+                )
                 allocation = self.risk.evaluate_shield_allocation(
                     self.account,
                     symbol=self.shield_symbol,
                     price=price,
-                    target_weight=self.shield_allocation_pct,
+                    target_weight=shield_weight,
                     now=now,
+                    allow_full_defensive=full_defensive,
                 )
                 if allocation is not None:
                     self._execute_buy(allocation, timestamp, price)
@@ -694,6 +712,8 @@ class BacktestRunner:
         benchmark: BarFrame | None = None,
         start_date: datetime | date | str | None = None,
         news_hook: Callable[[str, pd.Timestamp], NewsSignal | None] | None = None,
+        initial_positions: Mapping[str, Position] | None = None,
+        initial_cash: float | None = None,
     ) -> BacktestResult:
         """Backteste ``data`` (un DataFrame OHLCV normalisé par symbole).
 
@@ -783,16 +803,55 @@ class BacktestRunner:
             sim_index = index
 
         risk = RiskEngine(self._risk_config)
+        cloned_positions: dict[str, Position] = {}
+        seeded_open_trades: dict[str, _OpenTrade] = {}
+        seeded_marks: dict[str, float] = {}
+        if initial_positions:
+            for sym, pos in initial_positions.items():
+                if pos.qty <= 0 or sym not in prepared:
+                    continue
+                cloned = Position(
+                    symbol=pos.symbol,
+                    qty=pos.qty,
+                    avg_entry_price=pos.avg_entry_price,
+                    current_price=pos.current_price,
+                    stop_price=pos.stop_price,
+                    initial_stop_price=pos.initial_stop_price,
+                    highest_price=pos.highest_price,
+                    opened_at=pos.opened_at,
+                    partial_tp_taken=pos.partial_tp_taken,
+                )
+                cloned_positions[sym] = cloned
+                seeded_open_trades[sym] = _OpenTrade(
+                    entry_time=sim_index[0],
+                    entry_price=cloned.avg_entry_price,
+                    qty=cloned.qty,
+                    entry_fee=0.0,
+                    bars_held=1,
+                )
+                seeded_marks[sym] = cloned.current_price
+
+        positions_value = sum(p.market_value for p in cloned_positions.values())
+        if initial_cash is not None:
+            start_cash = max(0.0, float(initial_cash))
+            start_equity = start_cash + positions_value
+        else:
+            start_cash = max(0.0, self._config.initial_equity - positions_value)
+            start_equity = start_cash + positions_value
+
         # Les poids et le Bouclier viennent de la stratégie (donc du .env via
         # build_strategy) : le backtest ne recode pas les défauts.
         simulation = _Simulation(
             config=self._config,
             risk=risk,
             account=AccountState(
-                equity=self._config.initial_equity,
-                cash=self._config.initial_equity,
-                buying_power=self._config.initial_equity,
+                equity=start_equity,
+                cash=start_cash,
+                buying_power=start_cash,
+                positions=cloned_positions,
             ),
+            open_trades=seeded_open_trades,
+            marks=seeded_marks,
             is_shield_sword=is_shield_sword,
             shield_symbol=shield_symbol,
             shield_allocation_pct=float(getattr(params, "shield_allocation_pct", 0.70)),
@@ -811,22 +870,12 @@ class BacktestRunner:
         # (t - execution_delay_bars), comme pour les signaux eux-mêmes.
         regime_by_date: dict[pd.Timestamp, tuple[bool, bool]] = {}
         if benchmark is not None and not benchmark.empty and "close" in benchmark.columns:
-            close = benchmark["close"].astype(float)
             sma_period = self._risk_config.regime_sma_period
-            if len(close) >= sma_period:
-                sma = close.rolling(sma_period).mean()
-                bull = (
-                    (close > sma)
-                    .where(sma.notna(), False)
-                    .astype(bool)
-                    .shift(self._config.execution_delay_bars)
-                )
-                bear = (
-                    (close <= sma)
-                    .where(sma.notna(), False)
-                    .astype(bool)
-                    .shift(self._config.execution_delay_bars)
-                )
+            if len(benchmark) >= sma_period:
+                raw_bull = trend_regime(benchmark, sma_length=sma_period)
+                sma_ready = benchmark["close"].astype(float).rolling(sma_period).mean().notna()
+                bull = raw_bull.shift(self._config.execution_delay_bars)
+                bear = ((~raw_bull) & sma_ready).shift(self._config.execution_delay_bars)
                 for ts in benchmark.index:
                     regime_by_date[ts] = (
                         bool(bull.get(ts, False)),
@@ -888,13 +937,14 @@ class BacktestRunner:
             prepared=prepared,
             simulation=simulation,
             benchmark=benchmark,
+            initial_equity=start_equity,
         )
         return BacktestResult(
             equity_curve=curve,
             trades=tuple(sorted(simulation.trades, key=lambda t: (t.exit_time, t.symbol))),
             metrics=metrics,
             halts=tuple(simulation.halts),
-            initial_equity=self._config.initial_equity,
+            initial_equity=start_equity,
             symbols=tuple(symbols),
             strategy_name=self._strategy.name,
             final_positions={
@@ -920,6 +970,7 @@ class BacktestRunner:
         prepared: Mapping[str, BarFrame],
         simulation: _Simulation,
         benchmark: BarFrame | None = None,
+        initial_equity: float | None = None,
     ) -> dict[str, float | int | None]:
         """Calcule les métriques de performance et de risque.
 
@@ -929,9 +980,10 @@ class BacktestRunner:
             prepared: Barres enrichies par symbole tradé.
             simulation: État interne de la simulation.
             benchmark: Barres du benchmark (SPY), pour la référence de marché.
+            initial_equity: Capital de départ effectif (par défaut ``config.initial_equity``).
         """
         equity = curve["equity"].astype(float)
-        initial = self._config.initial_equity
+        initial = self._config.initial_equity if initial_equity is None else initial_equity
         final = float(equity.iloc[-1])
         total_return = final / initial - 1.0 if initial > 0 else None
 
@@ -982,20 +1034,27 @@ class BacktestRunner:
             sum(trade.bars_held for trade in trades) / len(trades) if trades else None
         )
 
-        # Panier équipondéré : ce qu'aurait rapporté « tout acheter et ne rien
-        # toucher » sur les actifs tradés, frais non déduits. Ce n'est PAS la
-        # référence de marché : c'est la performance du panier lui-même.
-        basket_returns = [
-            float(frame["close"].iloc[-1] / frame["close"].iloc[0] - 1.0)
-            for frame in prepared.values()
-            if len(frame) > 1
-        ]
+        # Panier équipondéré et référence de marché : mesurés STRICTEMENT sur
+        # la fenêtre simulée (curve.index[0]..fin), jamais sur le warm-up.
+        sim_start = curve.index[0]
+        basket_returns = []
+        for frame in prepared.values():
+            sliced = frame.loc[frame.index >= sim_start]
+            if len(sliced) > 1:
+                basket_returns.append(
+                    float(sliced["close"].iloc[-1] / sliced["close"].iloc[0] - 1.0)
+                )
         basket_buy_hold = (
             sum(basket_returns) / len(basket_returns) if basket_returns else None
         )
         # Référence : performance de l'indice (SPY) sur la même fenêtre. C'est
         # la seule comparaison qui dise si la stratégie a battu le marché.
-        benchmark_buy_hold = _buy_and_hold(benchmark)
+        bench_slice = (
+            benchmark.loc[benchmark.index >= sim_start]
+            if benchmark is not None
+            else None
+        )
+        benchmark_buy_hold = _buy_and_hold(bench_slice)
 
         return {
             "initial_equity": initial,

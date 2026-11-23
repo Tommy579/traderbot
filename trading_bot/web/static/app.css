@@ -1239,6 +1239,82 @@ details p {
   margin-top: 4px;
 }
 
+/* ---------- Onglet Prédiction ---------- */
+
+.pred-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.pred-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 6px 0 4px;
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+}
+
+.pred-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pred-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.pred-dot.central {
+  background: var(--series-1);
+}
+
+.pred-dot.bull {
+  background: var(--good);
+}
+
+.pred-dot.crash {
+  background: var(--bad);
+}
+
+.pred-dot.bench {
+  background: var(--muted);
+}
+
+.milestone-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.milestone-val {
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.pred-row-active td {
+  background: color-mix(in srgb, var(--series-1) 7%, transparent);
+}
+
+.pred-analogues {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.pred-analogue-closest {
+  border-color: color-mix(in srgb, var(--warn-color) 55%, var(--card-border));
+}
+
 /* ---------- Petits écrans ---------- */
 
 @media (max-width: 720px) {

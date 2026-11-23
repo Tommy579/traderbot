@@ -15,15 +15,15 @@ from __future__ import annotations
 import logging
 import math
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from enum import StrEnum
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, Protocol, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from alpaca.data.enums import DataFeed
+from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -38,14 +38,16 @@ from alpaca.trading.requests import (
 
 from trading_bot.clock import get_online_now, sync_online_clock
 from trading_bot.config import Settings, is_paper_endpoint
-from trading_bot.data.loader import BarFrame, DataError, normalize_ohlcv
+from trading_bot.data.loader import BarFrame, DataError, lookback_window, normalize_ohlcv
 from trading_bot.risk.engine import OrderIntent, OrderType, Position, Side
 
 LOGGER = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 _TERMINAL_FAILURES: Final[frozenset[str]] = frozenset(
     {"canceled", "expired", "rejected", "replaced", "done_for_day"}
 )
+_TRANSIENT_HTTP_CODES: Final[frozenset[int]] = frozenset({429, 500, 502, 503, 504})
 
 
 class BrokerError(RuntimeError):
@@ -59,9 +61,17 @@ class PaperTradingViolation(BrokerError):
 class OrderTimeoutError(BrokerError):
     """L'ordre n'a pas atteint un état final dans le délai imparti."""
 
+    def __init__(self, message: str, *, receipt: OrderReceipt | None = None) -> None:
+        super().__init__(message)
+        self.receipt = receipt
+
 
 class OrderRejectedError(BrokerError):
     """Le courtier a rejeté, annulé ou expiré l'ordre."""
+
+    def __init__(self, message: str, *, receipt: OrderReceipt | None = None) -> None:
+        super().__init__(message)
+        self.receipt = receipt
 
 
 class MarketClosure(StrEnum):
@@ -106,10 +116,6 @@ class TradingApi(Protocol):
     def get_asset(self, symbol_or_asset_id: Any) -> Any: ...
 
     def cancel_order_by_id(self, order_id: Any) -> Any: ...
-
-    def cancel_orders(self) -> Any: ...
-
-    def close_all_positions(self, cancel_orders: bool = True) -> Any: ...
 
 
 class DataApi(Protocol):
@@ -217,6 +223,50 @@ def _is_unknown_asset(exc: Exception) -> bool:
     return str(_UNKNOWN_ASSET_CODE) in text or "asset not found" in text
 
 
+def _is_transient_error(exc: Exception) -> bool:
+    """Indique si une erreur réseau/HTTP mérite un retry avec backoff."""
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return True
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int) and status_code in _TRANSIENT_HTTP_CODES:
+        return True
+    text = str(exc).lower()
+    return any(
+        token in text
+        for token in (
+            "429",
+            "too many requests",
+            "502",
+            "503",
+            "504",
+            "timed out",
+            "connection reset",
+            "temporarily unavailable",
+        )
+    )
+
+
+def _call_with_retry(
+    fn: Callable[[], _T],
+    *,
+    retries: int = 2,
+    base_delay: float = 0.35,
+    sleep: Callable[[float], None] = time.sleep,
+) -> _T:
+    """Exécute un appel de lecture courtier avec backoff exponentiel sur panne transitoire."""
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except Exception as exc:
+            if attempt >= retries or not _is_transient_error(exc):
+                raise
+            delay = base_delay * (2**attempt)
+            LOGGER.warning("appel Alpaca transitoire en échec (%s), nouvel essai dans %.2fs", exc, delay)
+            sleep(delay)
+            attempt += 1
+
+
 class AlpacaPaperClient:
     """Wrapper minimal et sûr de l'API Alpaca Paper.
 
@@ -271,7 +321,7 @@ class AlpacaPaperClient:
     def get_account(self) -> AccountSnapshot:
         """Retourne l'équity, le cash et le buying power du compte paper."""
         try:
-            account = self._trading.get_account()
+            account = _call_with_retry(self._trading.get_account)
             return AccountSnapshot(
                 equity=float(account.equity),
                 cash=float(account.cash),
@@ -283,7 +333,7 @@ class AlpacaPaperClient:
     def get_positions(self) -> dict[str, Position]:
         """Retourne les positions ouvertes, sans métadonnées de stop locales."""
         try:
-            raw_positions = self._trading.get_all_positions()
+            raw_positions = _call_with_retry(self._trading.get_all_positions)
         except Exception as exc:
             raise BrokerError("lecture des positions Alpaca impossible") from exc
 
@@ -310,7 +360,7 @@ class AlpacaPaperClient:
             return {}
         request = StockLatestTradeRequest(symbol_or_symbols=unique, feed=self._feed)
         try:
-            trades = self._data.get_stock_latest_trade(request)
+            trades = _call_with_retry(lambda: self._data.get_stock_latest_trade(request))
         except Exception as exc:
             raise BrokerError("lecture des derniers prix impossible") from exc
 
@@ -362,18 +412,19 @@ class AlpacaPaperClient:
         lookback_days: int = 400,
         now: datetime | None = None,
     ) -> BarFrame:
-        """Récupère les barres Alpaca et les normalise au schéma du projet."""
-        end = now or get_online_now().astimezone()
-        start = end - timedelta(days=lookback_days)
+        """Récupère les barres Alpaca (ajustées splits/dividendes) et les normalise."""
+        end = now or get_online_now()
+        start, end = lookback_window(timeframe, now=end, lookback_days=lookback_days)
         request = StockBarsRequest(
             symbol_or_symbols=symbol,
             timeframe=timeframe_to_alpaca(timeframe),
             start=start,
             end=end,
             feed=self._feed,
+            adjustment=Adjustment.ALL,
         )
         try:
-            bars = self._data.get_stock_bars(request)
+            bars = _call_with_retry(lambda: self._data.get_stock_bars(request))
         except Exception as exc:
             raise BrokerError(f"lecture des barres {symbol} impossible") from exc
 
@@ -385,10 +436,73 @@ class AlpacaPaperClient:
             frame = frame.xs(symbol, level="symbol")
         return normalize_ohlcv(frame, symbol)
 
+    def fetch_bars_batch(
+        self,
+        symbols: Sequence[str],
+        *,
+        timeframe: str = "1Day",
+        lookback_days: int = 400,
+        now: datetime | None = None,
+    ) -> tuple[dict[str, BarFrame], dict[str, str]]:
+        """Récupère les barres de plusieurs symboles en un seul appel Alpaca.
+
+        Returns:
+            ``(bars_by_symbol, errors_by_symbol)`` afin qu'un ticker manquant
+            n'empêche pas le traitement des autres.
+        """
+        unique = list(dict.fromkeys(sym for sym in symbols if sym))
+        if not unique:
+            return {}, {}
+        end = now or get_online_now()
+        start, end = lookback_window(timeframe, now=end, lookback_days=lookback_days)
+        request = StockBarsRequest(
+            symbol_or_symbols=unique,
+            timeframe=timeframe_to_alpaca(timeframe),
+            start=start,
+            end=end,
+            feed=self._feed,
+            adjustment=Adjustment.ALL,
+        )
+        try:
+            bars = _call_with_retry(lambda: self._data.get_stock_bars(request))
+        except Exception as exc:
+            raise BrokerError("lecture batch des barres Alpaca impossible") from exc
+
+        frame = bars.df
+        result: dict[str, BarFrame] = {}
+        errors: dict[str, str] = {}
+        if frame is None or frame.empty:
+            for sym in unique:
+                errors[sym] = f"{sym}: aucune barre Alpaca"
+            return result, errors
+
+        frame = frame.copy()
+        if isinstance(frame.index, pd.MultiIndex):
+            available = set(frame.index.get_level_values("symbol"))
+            for sym in unique:
+                if sym not in available:
+                    errors[sym] = f"{sym}: aucune barre Alpaca"
+                    continue
+                try:
+                    sub = frame.xs(sym, level="symbol")
+                    result[sym] = normalize_ohlcv(sub, sym)
+                except DataError as exc:
+                    errors[sym] = str(exc)
+        elif len(unique) == 1:
+            sym = unique[0]
+            try:
+                result[sym] = normalize_ohlcv(frame, sym)
+            except DataError as exc:
+                errors[sym] = str(exc)
+        else:
+            for sym in unique:
+                errors[sym] = f"{sym}: format batch inattendu"
+        return result, errors
+
     def is_market_open(self) -> bool:
         """Indique si le marché actions est ouvert (horloge Alpaca)."""
         try:
-            clock = self._trading.get_clock()
+            clock = _call_with_retry(self._trading.get_clock)
             ts = getattr(clock, "timestamp", None)
             if isinstance(ts, datetime):
                 sync_online_clock(ts)
@@ -412,7 +526,7 @@ class AlpacaPaperClient:
             BrokerError: si l'état n'a pas pu être lu auprès du courtier.
         """
         try:
-            clock = self._trading.get_clock()
+            clock = _call_with_retry(self._trading.get_clock)
         except Exception as exc:
             raise BrokerError("lecture de l'horloge de marché impossible") from exc
 
@@ -471,7 +585,7 @@ class AlpacaPaperClient:
         """
         if not is_paper_endpoint(self._settings.alpaca_trading_url):
             raise PaperTradingViolation("endpoint non paper : ordre refusé")
-        instant = now or get_online_now().astimezone()
+        instant = now or get_online_now()
         if not intent.is_executable(instant):
             raise BrokerError(
                 f"jeton d'approbation expiré ou invalide pour {intent.symbol}"
@@ -565,16 +679,24 @@ class AlpacaPaperClient:
                 return receipt
             if receipt.is_terminal_failure:
                 raise OrderRejectedError(
-                    f"ordre {order_id} terminé en échec (statut={receipt.status})"
+                    f"ordre {order_id} terminé en échec (statut={receipt.status})",
+                    receipt=receipt,
                 )
             time.sleep(poll_seconds)
         last_status = receipt.status if receipt else "inconnu"
         raise OrderTimeoutError(
             f"ordre {order_id} non exécuté après {timeout_seconds:.0f}s "
-            f"(dernier statut: {last_status})"
+            f"(dernier statut: {last_status})",
+            receipt=receipt,
         )
 
-    def cancel_open_orders(self, symbol: str) -> int:
+    def cancel_open_orders(
+        self,
+        symbol: str,
+        *,
+        timeout_seconds: float = 3.0,
+        poll_seconds: float = 0.25,
+    ) -> int:
         """Annule tous les ordres ouverts d'un symbole (jambes de stop incluses).
 
         Utilisé avant une liquidation manuelle : une jambe de stop orpheline
@@ -589,7 +711,7 @@ class AlpacaPaperClient:
             nested=True,
         )
         try:
-            orders = self._trading.get_orders(request)
+            orders = _call_with_retry(lambda: self._trading.get_orders(request))
         except Exception as exc:
             raise BrokerError(f"lecture des ordres ouverts {symbol} impossible") from exc
         cancelled = 0
@@ -607,14 +729,23 @@ class AlpacaPaperClient:
                 ) from exc
             cancelled += 1
 
-        # Alpaca accepte une requête d'annulation de façon asynchrone. Ne pas
-        # supposer qu'elle est effective avant d'avoir relu les ordres ouverts.
-        try:
-            remaining = self._trading.get_orders(request)
-        except Exception as exc:
-            raise BrokerError(
-                f"vérification des ordres ouverts {symbol} impossible après annulation"
-            ) from exc
+        # Alpaca accepte une requête d'annulation de façon asynchrone. On relit
+        # avec une courte boucle bornée avant de conclure à un échec.
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        remaining: Sequence[Any] = ()
+        while True:
+            try:
+                remaining = _call_with_retry(lambda: self._trading.get_orders(request))
+            except Exception as exc:
+                raise BrokerError(
+                    f"vérification des ordres ouverts {symbol} impossible après annulation"
+                ) from exc
+            if not remaining:
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(poll_seconds)
+
         remaining_ids = [
             str(getattr(order, "id", "sans-identifiant")) for order in remaining
         ]
@@ -630,20 +761,6 @@ class AlpacaPaperClient:
                 symbol,
             )
         return cancelled
-
-    def cancel_all_orders(self) -> None:
-        """Annule tous les ordres ouverts du compte paper."""
-        try:
-            self._trading.cancel_orders()
-        except Exception as exc:
-            raise BrokerError("annulation des ordres impossible") from exc
-
-    def close_all_positions(self) -> None:
-        """Liquide toutes les positions (procédure d'urgence)."""
-        try:
-            self._trading.close_all_positions(cancel_orders=True)
-        except Exception as exc:
-            raise BrokerError("liquidation des positions impossible") from exc
 
     @staticmethod
     def _to_receipt(order: Any) -> OrderReceipt:

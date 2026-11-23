@@ -34,6 +34,7 @@ from trading_bot.bot import (
     _build_notifier,
     _build_stats_publisher,
     _inject_benchmark,
+    ancillary_defensive_symbols,
     build_strategy,
     market_closed_message,
 )
@@ -52,6 +53,7 @@ from trading_bot.data.loader import (
     MarketDataProvider,
     YFinanceProvider,
     drop_incomplete_bar,
+    trend_regime,
 )
 from trading_bot.data.news_sentiment import NewsAssessment
 from trading_bot.execution.alpaca_client import (
@@ -179,11 +181,20 @@ def cmd_live(args: argparse.Namespace) -> int:
     if getattr(args, "watch_only", False):
         report = bot.run_watch_only()
         print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
-        return 0 if not report.errors else 1
+        # Un avertissement partiel alors que le cycle a tourné ne doit pas faire
+        # boucler systemd Restart=on-failure.
+        fatal = bool(report.errors) and report.equity <= 0.0 and not report.orders
+        return 1 if fatal else 0
     if args.once:
         report = bot.run_once()
         print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
-        return 0 if not report.errors else 1
+        fatal = (
+            bool(report.errors)
+            and not report.signals
+            and not report.orders
+            and not report.skipped
+        )
+        return 1 if fatal else 0
     try:
         bot.run_forever()
     except KeyboardInterrupt:
@@ -248,7 +259,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         b_close = benchmark_complete["close"].astype(float)
         b_sma = float(b_close.rolling(sma_period).mean().iloc[-1])
         b_last = float(b_close.iloc[-1])
-        regime_label = "BULL" if b_last > b_sma else "BEAR"
+        is_bull = bool(trend_regime(benchmark_complete, sma_length=sma_period).iloc[-1])
+        regime_label = "BULL" if is_bull else "BEAR"
         extra = "" if regime_label == "BULL" else " [BEAR_REGIME_VETO actif sur offensifs]"
         print(
             f"  régime {benchmark_symbol} (SMA {sma_period}) : {regime_label} "
@@ -561,14 +573,8 @@ def cmd_backtest(args: argparse.Namespace) -> int:
             data[symbol].index[-1].date(),
         )
 
-    ancillary: list[str] = []
-    shield_symbol = getattr(getattr(strategy, "params", None), "shield_symbol", None)
-    if isinstance(shield_symbol, str) and shield_symbol:
-        ancillary.append(shield_symbol)
-    elif settings.safe_haven_enabled:
-        ancillary.extend(settings.safe_haven_symbols)
-    for extra in dict.fromkeys(ancillary):
-        if extra in data or extra == settings.benchmark_symbol:
+    for extra in ancillary_defensive_symbols(strategy, settings):
+        if extra in data:
             continue
         try:
             data[extra] = provider.fetch(extra, fetch_start, end, interval=args.interval)

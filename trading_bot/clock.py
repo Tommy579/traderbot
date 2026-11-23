@@ -28,7 +28,6 @@ LOGGER = logging.getLogger("trading_bot.clock")
 
 _ONLINE_SOURCES: Final[tuple[str, ...]] = (
     "https://paper-api.alpaca.markets",
-    "https://api.alpaca.markets",
     "https://www.google.com",
     "https://cloudflare.com",
 )

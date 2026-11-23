@@ -266,8 +266,16 @@ class CachedProvider:
         end: datetime,
         interval: str,
     ) -> Path:
-        """Chemin du fichier de cache pour ce symbole et cette fenêtre."""
-        key = f"{symbol}_{interval}_{start:%Y%m%dT%H%M}_{end:%Y%m%dT%H%M}.csv"
+        """Chemin du fichier de cache pour ce symbole et cette fenêtre.
+
+        Pour les barres journalières (``1d``), la clé est normalisée au jour
+        (``%Y%m%d``) afin qu'un appel à 10h01 et un appel à 10h02 partagent le
+        même fichier CSV au lieu de saturer ``state/cache/``.
+        """
+        if interval == "1d":
+            key = f"{symbol}_{interval}_{start:%Y%m%d}_{end:%Y%m%d}.csv"
+        else:
+            key = f"{symbol}_{interval}_{start:%Y%m%dT%H%M}_{end:%Y%m%dT%H%M}.csv"
         return self._cache_dir / key
 
     def fetch(

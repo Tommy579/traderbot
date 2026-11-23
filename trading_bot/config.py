@@ -32,7 +32,6 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 PAPER_HOST: str = "paper-api.alpaca.markets"
-LIVE_HOST: str = "api.alpaca.markets"
 PAPER_ENDPOINT: str = f"https://{PAPER_HOST}"
 DATA_ENDPOINT: str = "https://data.alpaca.markets"
 
@@ -340,7 +339,7 @@ class Settings(BaseSettings):
     alpaca_secret_key: SecretStr | None = None
     alpaca_trading_url: str = PAPER_ENDPOINT
     alpaca_data_url: str = DATA_ENDPOINT
-    data_feed: Literal["iex", "sip", "otc", "delayed_sip"] = "iex"
+    data_feed: Literal["iex", "sip", "otc", "delayed_sip"] = "delayed_sip"
 
     symbols: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [

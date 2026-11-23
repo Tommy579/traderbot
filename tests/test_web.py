@@ -1066,3 +1066,117 @@ def test_run_backtest_loads_shield_symbol(
     assert "SGOV" in fetched
     assert "SGOV" in result["symbols"]
     assert result["metrics"]["open_positions_at_end"] >= 1
+
+
+def test_predict_job_returns_forecast_and_actions(
+    settings, bars_factory, monkeypatch
+) -> None:
+    """POST /api/predict exécute la projection consultative sans toucher au bot."""
+    import trading_bot.web.app as webapp
+
+    long_bars = {
+        "AAPL": bars_factory([100.0 * (1.001**i) for i in range(260)]),
+        "SGOV": bars_factory([100.0 * (1.0002**i) for i in range(260)], spread=0.02),
+        "BRK.B": bars_factory([300.0 * (1.0003**i) for i in range(260)]),
+        "WMT": bars_factory([60.0 * (1.0003**i) for i in range(260)]),
+        "KO": bars_factory([55.0 * (1.0002**i) for i in range(260)]),
+        "SPY": bars_factory([400.0 * (1.0006**i) for i in range(260)]),
+    }
+    monkeypatch.setattr(
+        webapp, "CachedProvider", lambda provider, cache_dir, **kw: provider
+    )
+    monkeypatch.setattr(
+        webapp,
+        "YFinanceProvider",
+        lambda: type(
+            "P",
+            (),
+            {
+                "fetch": staticmethod(
+                    lambda symbol, start, end, interval="1d": long_bars[symbol]
+                )
+            },
+        )(),
+    )
+    httpd, port = start_server(make_context(settings, long_bars))
+    try:
+        code, payload = request(
+            port,
+            "/api/predict",
+            method="POST",
+            body={
+                "strategy": "shield_sword",
+                "symbols": ["AAPL"],
+                "horizon_days": 63,
+            },
+        )
+        assert code == 200 and payload["ok"] is True
+        snapshot = wait_job(port, payload["job"]["id"], timeout=30)
+        assert snapshot["status"] == "done", snapshot.get("error")
+        result = snapshot["result"]
+        assert result["horizon_days"] == 63
+        assert len(result["timeline_points"]) == 63
+        assert len(result["strategies_comparison"]) == 4
+        assert "crash_risk" in result["market_outlook"]
+        assert "observed_events" in result["historical_context"]
+        assert "news_outlook" in result
+        assert len(result["predicted_actions"]) >= 1
+
+        req_page = urllib.request.Request(f"http://127.0.0.1:{port}/")
+        with urllib.request.urlopen(req_page, timeout=10) as resp:
+            page = resp.read().decode()
+        assert 'id="tab-predict"' in page
+        assert 'id="pred-result"' in page
+
+        req_js = urllib.request.Request(f"http://127.0.0.1:{port}/app.js")
+        with urllib.request.urlopen(req_js, timeout=10) as resp:
+            script = resp.read().decode()
+        assert "renderPrediction" in script and "drawPredictionChart" in script
+    finally:
+        httpd.shutdown()
+
+
+def test_predict_concurrency_guard_and_backtest_symbol_tolerance(
+    settings, bars_factory, monkeypatch
+) -> None:
+    """Deux prédictions ne tournent pas en parallèle et le backtest tolère un ticker inconnu."""
+    import trading_bot.web.app as webapp
+    from trading_bot.web.jobs import JobStatus
+
+    long_bars = {
+        "AAPL": bars_factory([100.0 * (1.001**i) for i in range(260)]),
+        "SPY": bars_factory([400.0 * (1.0006**i) for i in range(260)]),
+    }
+
+    def fake_fetch(symbol, start, end, interval="1d"):
+        if symbol not in long_bars:
+            raise DataError(f"{symbol}: introuvable")
+        return long_bars[symbol]
+
+    monkeypatch.setattr(
+        webapp, "CachedProvider", lambda provider, cache_dir, **kw: provider
+    )
+    monkeypatch.setattr(
+        webapp,
+        "YFinanceProvider",
+        lambda: type("P", (), {"fetch": staticmethod(fake_fetch)})(),
+    )
+
+    context = make_context(settings, long_bars)
+    httpd, port = start_server(context)
+    try:
+        running = context.jobs.submit("predict", "test", lambda: time.sleep(1.5) or {})
+        assert running.status is JobStatus.RUNNING
+        code, payload = request(
+            port, "/api/predict", method="POST", body={"strategy": "shield_sword"}
+        )
+        assert code == 200 and payload["ok"] is False
+        assert "déjà en cours" in payload["error"]
+
+        res = webapp._run_backtest(
+            settings, "donchian_breakout", ["AAPL", "INCONNU"], "2023-06-01", "2023-12-31"
+        )
+        assert "AAPL" in res["symbols"]
+        assert any("INCONNU" in err for err in res["errors"])
+    finally:
+        httpd.shutdown()

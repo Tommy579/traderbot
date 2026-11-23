@@ -160,10 +160,12 @@ TAB_BUTTONS.forEach((btn, index) => {
 });
 
 /* ---------------- Sélecteurs de stratégie ---------------- */
-for (const id of ["#check-strategy", "#auto-strategy"]) {
-  $(id).innerHTML = Object.values(STRATEGIES).map(s =>
+for (const id of ["#check-strategy", "#auto-strategy", "#pred-strategy"]) {
+  const sel = $(id);
+  if (!sel) continue;
+  sel.innerHTML = Object.values(STRATEGIES).map(s =>
     `<option value="${s.code}">${esc(s.name)}</option>`).join("");
-  $(id).value = "donchian_breakout";
+  sel.value = id === "#pred-strategy" ? "shield_sword" : "donchian_breakout";
 }
 $("#bt-strategies").innerHTML = Object.values(STRATEGIES).map(s =>
   `<button type="button" role="radio" aria-checked="false" class="strategy-card" data-code="${s.code}"><b>${esc(s.name)}</b><span>${esc(s.desc)}</span></button>`).join("");
@@ -302,6 +304,7 @@ let refreshInFlight = false;
 const FORM_FIELDS = [
   "#set-symbols",
   "#bt-symbols",
+  "#pred-symbols",
   "#set-webhook-format",
   "#set-webhook-chat",
   "#set-cash-floor",
@@ -450,6 +453,7 @@ async function refreshStatus({ silent = false } = {}) {
     if (s.settings) {
       setFieldIfClean("#set-symbols", s.settings.symbols.join(", "));
       setFieldIfClean("#bt-symbols", s.settings.symbols.join(", "));
+      setFieldIfClean("#pred-symbols", s.settings.symbols.join(", "));
       setFieldIfClean("#set-webhook-format", s.settings.webhook_format || "discord");
       if (s.settings.webhook_chat_id) {
         setFieldIfClean("#set-webhook-chat", s.settings.webhook_chat_id);
@@ -801,8 +805,12 @@ $("#btn-backtest").addEventListener("click", async () => {
   msg("bt-msg", "Test en cours : téléchargement des prix puis simulation, environ 30 secondes…", "info");
   const symbols = $("#bt-symbols").value.split(",").map(s => s.trim()).filter(Boolean);
   try {
+    const btEnd = $("#bt-end") ? $("#bt-end").value : "";
     const { job } = await api("/api/backtest", {
-      strategy: btStrategy, symbols, start: $("#bt-start").value
+      strategy: btStrategy,
+      symbols,
+      start: $("#bt-start").value,
+      end: btEnd || null
     });
     const r = await pollJob(job.id, () => msg("bt-msg", "Simulation en cours…", "info"));
     const m = r.metrics;
@@ -835,8 +843,21 @@ $("#btn-backtest").addEventListener("click", async () => {
         <div class="table-wrap"><table><thead><tr><th scope="col">Action</th><th scope="col">Acheté le</th><th scope="col">Vendu le</th><th scope="col">Résultat</th><th scope="col">Motif de sortie</th></tr></thead><tbody>
         ${r.trades.slice(-10).map(t => `<tr><td><b>${esc(t.symbol)}</b></td><td>${frDate(t.entry_date)}</td><td>${frDate(t.exit_date)}</td>
           <td class="num ${cls(t.pnl)}">${money2(t.pnl)} <small>(${pct(t.return_pct)})</small></td>
-          <td class="small">${esc({ stop_loss: "filet de sécurité", trailing_stop: "filet remonté", strategy_exit: "règle de sortie", circuit_breaker: "coupe-circuit", stop_gap: "trou d'ouverture sous le filet" }[t.reason] || t.reason)}</td></tr>`).join("")}
+          <td class="small">${esc({
+            stop_loss: "filet de sécurité",
+            trailing_stop: "filet remonté",
+            strategy_exit: "règle de sortie",
+            circuit_breaker: "coupe-circuit",
+            stop_gap: "trou d'ouverture sous le filet",
+            partial_take_profit: "prise de profit partielle (+20 %)",
+            position_trim_overweight: "écrémage surpondération (> 25 %)",
+            safe_haven_unwind: "allègement défensif (achat offensif)",
+            news_panic_exit: "sortie d'urgence (actualité critique)",
+            shield_allocation: "financement du Bouclier"
+          }[t.reason] || t.reason)}</td></tr>`).join("")}
         </tbody></table></div></div>` : ""}
+      ${(r.errors || []).length ? `<div class="banner"><b>Symboles écartés pendant le test :</b><ul class="small" style="margin:6px 0 0">
+        ${(r.errors || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
       ${r.halts.length ? `<div class="banner"><b>Coupe-circuits déclenchés pendant le test :</b><ul class="small" style="margin:6px 0 0">
         ${r.halts.map(h => `<li>${frDate(h.date)} — ${esc(h.reason)}</li>`).join("")}</ul></div>` : ""}
     `;
@@ -917,6 +938,306 @@ function drawEquityChart(points, initial) {
   }, { passive: true });
   svg.addEventListener("touchend", onLeave);
 }
+
+/* ---------------- Prédiction (informative) ---------------- */
+const PRED_ACTION_BADGE = {
+  buy: { cls: "buy", label: "ACHAT PRÉVU" },
+  sell: { cls: "sell", label: "VENTE / SORTIE" },
+  rebalance: { cls: "ok", label: "REBALANCEMENT" },
+  tp: { cls: "ok", label: "PRISE DE PROFIT +20 %" },
+  stop: { cls: "warn", label: "FILET PROCHE" },
+  veto: { cls: "warn", label: "VETO ACTUALITÉS" },
+  panic: { cls: "sell", label: "ALERTE PANIQUE LLM" },
+  halt: { cls: "sell", label: "COUPE-CIRCUIT KRACH" }
+};
+const CRASH_BADGE = {
+  faible: "ok",
+  "modéré": "hold",
+  "élevé": "warn",
+  critique: "err"
+};
+
+function renderPrediction(r) {
+  const mo = r.market_outlook || {};
+  const cr = mo.crash_risk || {};
+  const news = r.news_outlook || {};
+  const mc = r.monte_carlo_summary || {};
+  const hist = r.historical_context || {};
+  const obs = hist.observed_events || {};
+  const episodes = hist.crash_episodes || obs.crash_episodes || [];
+  const strats = r.strategies_comparison || [];
+  const primary = strats.find(s => s.strategy === r.primary_strategy) || strats[0] || {};
+  const milestones = r.milestones || [];
+  const actions = r.predicted_actions || [];
+  const symRows = r.symbol_forecasts || [];
+  const analogues = hist.crash_analogues || [];
+
+  const crashBadgeCls = CRASH_BADGE[cr.level] || "warn";
+  const newsScore = news.average_score ?? 0;
+  const newsSign = newsScore >= 0 ? "+" : "";
+  const newsBadgeCls = (news.critical_symbols || []).length ? "err" : (newsScore <= -0.3 ? "warn" : "ok");
+  const portfolioBadge = r.uses_live_portfolio
+    ? `<span class="badge ok">Basée sur vos positions actuelles</span>`
+    : `<span class="badge hold">Capital de référence (${money(r.initial_equity)})</span>`;
+
+  $("#pred-result").innerHTML = `
+    <div class="card">
+      <div class="between" style="margin-bottom:8px">
+        <h2 style="margin:0">Vue d'ensemble — ${esc(primary.label || r.primary_strategy)} sur ${r.horizon_months} mois (~${r.horizon_weeks} sem.)</h2>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${portfolioBadge}
+          <span class="badge ${crashBadgeCls}">${esc(cr.label || "Risque évalué")} (${Math.round((cr.score || 0) * 100)} / 100)</span>
+        </div>
+      </div>
+      <p class="hint">${esc(mo.summary || "")}</p>
+      <div class="tiles">
+        <div class="tile tile-hero">
+          <div class="label">Projection médiane (P50)</div>
+          <div class="value ${cls(primary.central_return_pct)}">${pct(primary.central_return_pct)}<br><small>soit ${money(primary.central_final_equity)}</small></div>
+        </div>
+        <div class="tile">
+          <div class="label">Scénario haussier (P85)</div>
+          <div class="value ${cls(primary.bull_return_pct)}">${pct(primary.bull_return_pct)}<br><small>${money(primary.bull_final_equity)}</small></div>
+        </div>
+        <div class="tile">
+          <div class="label">Résistance krach (P10)</div>
+          <div class="value ${cls(primary.crash_return_pct)}">${pct(primary.crash_return_pct)}<br><small>${money(primary.crash_final_equity)}</small></div>
+        </div>
+        <div class="tile">
+          <div class="label">Prob. hausse / krach ≥10 %</div>
+          <div class="value">${mc.prob_positive_return != null ? Math.round(mc.prob_positive_return * 100) + " %" : "—"}<br><small>${mc.prob_drawdown_10pct != null ? "Risque chute ≥10 % : " + Math.round(mc.prob_drawdown_10pct * 100) + " %" : esc(news.mood_label || "Neutre")}</small></div>
+        </div>
+      </div>
+      <div class="pred-meta-grid">
+        <div class="subcard">
+          <h3>Analyse du LLM d'actualités <span class="badge ${newsBadgeCls}">${newsSign}${Number(newsScore).toFixed(2)}</span></h3>
+          <p class="small" style="margin:6px 0 0">${esc(news.summary_text || "")}</p>
+        </div>
+        <div class="subcard">
+          <h3>Facteurs de risque de krach (${esc(mo.benchmark || "SPY")} : régime ${esc(mo.regime || "—")})</h3>
+          ${(cr.drivers || []).length
+            ? `<ul class="small" style="margin:6px 0 0;padding-left:18px">${cr.drivers.map(d => `<li>${esc(d)}</li>`).join("")}</ul>`
+            : `<p class="small" style="margin:6px 0 0">Volatilité et tendance actuelles dans les normes historiques.</p>`}
+        </div>
+      </div>
+      ${mc.simulations ? `<p class="small hint" style="margin:10px 0 0">Monte Carlo (${mc.simulations} trajectoires par blocs historiques de ${mc.block_size_days} séances) — Indice ${esc(mo.benchmark || "SPY")} : P10 ${pct(mc.benchmark_p10_return_pct)} · P50 ${pct(mc.benchmark_p50_return_pct)} · P90 ${pct(mc.benchmark_p90_return_pct)}.</p>` : ""}
+      <p class="small hint" style="margin:6px 0 0">${esc(r.disclaimer || "")}</p>
+    </div>
+
+    <div class="card">
+      <h2>Trajectoire projetée sur les prochaines semaines et mois</h2>
+      <p class="hint">Zone ombrée : fourchette entre le scénario haussier et le scénario de krach. Survolez la courbe pour lire chaque séance projetée.</p>
+      <div class="pred-legend">
+        <span><i class="pred-dot central"></i>Robot (scénario central)</span>
+        <span><i class="pred-dot bull"></i>Scénario haussier</span>
+        <span><i class="pred-dot crash"></i>Robot (scénario krach)</span>
+        <span><i class="pred-dot bench"></i>Marché (${esc(mo.benchmark || "SPY")})</span>
+      </div>
+      <div class="chart-wrap" id="pred-chart-wrap">
+        <div class="chart-tip" id="pred-chart-tip"></div>
+        <div id="pred-svg"></div>
+      </div>
+    </div>
+
+    ${milestones.length ? `<div class="card">
+      <h2>Jalons semaine après semaine / mois après mois</h2>
+      <div class="milestone-grid">
+        ${milestones.map(m => `<div class="subcard">
+          <div class="between"><b>${esc(m.label)}</b><span class="small">${frDate(m.date)}</span></div>
+          <div class="milestone-val ${cls(m.central_return_pct)}">${money(m.central_equity)} <small>(${pct(m.central_return_pct)})</small></div>
+          <p class="small" style="margin:4px 0 0">Fourchette : <span class="${cls(m.crash_return_pct)}">${pct(m.crash_return_pct)}</span> à <span class="${cls(m.bull_return_pct)}">${pct(m.bull_return_pct)}</span></p>
+        </div>`).join("")}
+      </div>
+    </div>` : ""}
+
+    <div class="card">
+      <h2>Comparatif des 4 stratégies sur l'horizon futur</h2>
+      <p class="hint">Simulation identique aux règles réelles du robot (stops ATR, coupe-circuits, prise de profit +20 %, Bouclier SGOV).</p>
+      <div class="table-wrap"><table><thead><tr>
+        <th scope="col">Stratégie</th><th class="num" scope="col">Central</th><th class="num" scope="col">Haussier</th><th class="num" scope="col">Krach</th><th class="num" scope="col">Pire chute (krach)</th><th class="num" scope="col">Exposition</th><th scope="col">Posture prévue</th>
+      </tr></thead><tbody>
+        ${strats.map(s => `<tr${s.strategy === r.primary_strategy ? ` class="pred-row-active"` : ""}>
+          <td><b>${esc(s.label)}</b>${s.strategy === r.primary_strategy ? ` <span class="badge ok">Sélectionnée</span>` : ""}</td>
+          <td class="num ${cls(s.central_return_pct)}">${pct(s.central_return_pct)}<br><small>${money(s.central_final_equity)}</small></td>
+          <td class="num ${cls(s.bull_return_pct)}">${pct(s.bull_return_pct)}</td>
+          <td class="num ${cls(s.crash_return_pct)}">${pct(s.crash_return_pct)}</td>
+          <td class="num neg">${(s.crash_max_drawdown_pct * 100).toFixed(1).replace(".", ",")} %</td>
+          <td class="num">${(s.exposure_pct * 100).toFixed(0)} %</td>
+          <td class="small">${esc(s.posture)}</td>
+        </tr>`).join("")}
+      </tbody></table></div>
+    </div>
+
+    <div class="card">
+      <h2>Actions à venir du robot selon les stratégies</h2>
+      <p class="hint">Ordres proches, rebalancements mensuels programmés (Bouclier + Épée), vetos d'actualités LLM et seuils de déclenchement.</p>
+      ${actions.length ? `<div class="table-wrap"><table><thead><tr>
+        <th scope="col">Échéance</th><th scope="col">Stratégie</th><th scope="col">Action</th><th scope="col">Titre</th><th scope="col">Détails</th>
+      </tr></thead><tbody>
+        ${actions.map(a => {
+          const meta = PRED_ACTION_BADGE[a.kind] || { cls: "hold", label: esc(a.kind) };
+          return `<tr>
+            <td class="small"><b>${esc(a.horizon)}</b><br>${frDate(a.date)}</td>
+            <td class="small">${esc(a.strategy_label)}</td>
+            <td><span class="badge ${meta.cls}">${meta.label}</span></td>
+            <td><b>${esc(a.symbol)}</b></td>
+            <td class="small"><b>${esc(a.title)}</b><br>${esc(a.detail)}</td>
+          </tr>`;
+        }).join("")}
+      </tbody></table></div>` : `<p class="skel">Aucun ordre immédiat ni déclenchement imminent détecté sur la fenêtre analysée.</p>`}
+    </div>
+
+    ${symRows.length ? `<div class="card">
+      <h2>Prévisions par action et influence du LLM d'actualités</h2>
+      <div class="table-wrap"><table><thead><tr>
+        <th scope="col">Action</th><th class="num" scope="col">Prix actuel</th><th class="num" scope="col">Cible centrale</th><th class="num" scope="col">Haussier / Krach</th><th scope="col">Actualités LLM</th><th scope="col">Seuils du robot</th>
+      </tr></thead><tbody>
+        ${symRows.map(row => {
+          const n = row.news;
+          const nBadge = n
+            ? `<span class="badge ${n.blocks_entry ? "err" : (n.score <= -0.25 ? "warn" : "ok")}">${n.score >= 0 ? "+" : ""}${Number(n.score).toFixed(2)}</span><br><small>${esc(n.rationale || n.effect || "")}</small>`
+            : `<span class="small" style="color:var(--muted)">Neutre (pas d'actualité)</span>`;
+          return `<tr>
+            <td><b>${esc(row.symbol)}</b></td>
+            <td class="num">${money2(row.current_price)}</td>
+            <td class="num ${cls(row.central_change_pct)}">${money2(row.central_price)}<br><small>${pct(row.central_change_pct)}</small></td>
+            <td class="num"><span class="${cls(row.bull_change_pct)}">${pct(row.bull_change_pct)}</span><br><small class="${cls(row.crash_change_pct)}">${pct(row.crash_change_pct)}</small></td>
+            <td class="small">${nBadge}</td>
+            <td class="small">${esc(row.trigger_hint)}<br><small>SMA200 : ${money2(row.sma_200)} · ATR : ${money2(row.atr)}</small></td>
+          </tr>`;
+        }).join("")}
+      </tbody></table></div>
+    </div>` : ""}
+
+    <div class="card">
+      <h2>Mémoire des marchés passés et résistance aux grands krachs</h2>
+      <p class="hint">Événements extrêmes réellement mesurés dans l'historique chargé (${obs.bars_analyzed || 0} séances, du ${frDate(obs.history_start)} au ${frDate(obs.history_end)}).</p>
+      <div class="tiles">
+        <div class="tile"><div class="label">Pire chute historique</div><div class="value neg">${((obs.max_drawdown_pct || 0) * 100).toFixed(1).replace(".", ",")} %<br><small>${frDate(obs.max_drawdown_peak_date)} → ${frDate(obs.max_drawdown_trough_date)}</small></div></div>
+        <div class="tile"><div class="label">Pire choc sur 1 mois</div><div class="value neg">${((obs.worst_20d_return_pct || 0) * 100).toFixed(1).replace(".", ",")} %<br><small>${frDate(obs.worst_20d_date)}</small></div></div>
+        <div class="tile"><div class="label">Pire séance</div><div class="value neg">${((obs.worst_daily_return_pct || 0) * 100).toFixed(1).replace(".", ",")} %<br><small>${frDate(obs.worst_daily_date)}</small></div></div>
+        <div class="tile"><div class="label">Meilleur rebond 1 mois</div><div class="value pos">+${((obs.best_20d_return_pct || 0) * 100).toFixed(1).replace(".", ",")} %<br><small>${frDate(obs.best_20d_date)}</small></div></div>
+      </div>
+      ${episodes.length ? `<div class="subcard" style="margin-top:12px">
+        <h3>Principaux krachs / corrections réels détectés dans l'historique</h3>
+        <ul class="small" style="margin:6px 0 0;padding-left:18px">
+          ${episodes.map(ep => `<li><b>${(ep.drop_pct * 100).toFixed(1).replace(".", ",")} %</b> du ${frDate(ep.peak_date)} au ${frDate(ep.trough_date)} (${ep.duration_bars} séances${ep.recovered ? ", suivi d'une récupération" : ", en cours"})</li>`).join("")}
+        </ul>
+      </div>` : ""}
+      <div class="pred-analogues">
+        ${analogues.map(a => `<div class="subcard${a.is_closest ? " pred-analogue-closest" : ""}">
+          <div class="between"><b>${esc(a.title)}</b>${a.is_closest ? `<span class="badge warn">Profil le plus proche</span>` : `<span class="small">${esc(a.period)}</span>`}</div>
+          <p class="small" style="margin:6px 0 4px">${esc(a.summary)}</p>
+          <p class="small" style="margin:0;color:var(--series-1)"><b>Défense du bot :</b> ${esc(a.bot_defense)}</p>
+        </div>`).join("")}
+      </div>
+    </div>
+
+    ${(r.errors || []).length ? `<div class="banner"><b>Informations complémentaires :</b><ul class="small" style="margin:6px 0 0">${(r.errors || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+  `;
+  drawPredictionChart(r.timeline_points || [], r.initial_equity || 100000);
+}
+
+function drawPredictionChart(points, initial) {
+  const wrap = $("#pred-svg");
+  const tip = $("#pred-chart-tip");
+  if (!wrap || !tip) return;
+  if (!points || points.length < 2) {
+    wrap.innerHTML = "<p class='skel'>Pas assez de points pour tracer la prédiction.</p>";
+    return;
+  }
+  const W = 760, H = 290, padL = 62, padR = 16, padT = 16, padB = 30;
+  const allVals = [initial];
+  for (const p of points) {
+    allVals.push(p.central_equity, p.bull_equity, p.crash_equity, p.benchmark_equity);
+  }
+  let vmin = Math.min(...allVals), vmax = Math.max(...allVals);
+  const span = vmax - vmin || 100;
+  vmin -= span * 0.06; vmax += span * 0.06;
+
+  const x = i => padL + (i / (points.length - 1)) * (W - padL - padR);
+  const y = v => padT + (1 - (v - vmin) / (vmax - vmin)) * (H - padT - padB);
+  const lineFor = key => points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join("");
+
+  const topPts = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.bull_equity).toFixed(1)}`).join("");
+  const botPts = points.slice().reverse().map((p, idx) => {
+    const i = points.length - 1 - idx;
+    return `L${x(i).toFixed(1)},${y(p.crash_equity).toFixed(1)}`;
+  }).join("");
+  const conePath = `${topPts} ${botPts} Z`;
+
+  const gridY = [0, 0.25, 0.5, 0.75, 1].map(f => {
+    const gy = padT + f * (H - padT - padB), gv = vmax - f * (vmax - vmin);
+    return `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="var(--card-border)" stroke-width="1"/>
+      <text x="${padL - 8}" y="${gy + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${money(gv)}</text>`;
+  }).join("");
+  const step = Math.max(1, Math.floor(points.length / 6));
+  const dates = points.map((p, i) => i % step === 0 || i === points.length - 1
+    ? `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${frDayMonth(p.date)}</text>` : "").join("");
+  const baseY = y(initial);
+
+  wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block" role="img" aria-label="Courbe de prédiction multi-scénarios">
+    ${gridY}${dates}
+    <path d="${conePath}" fill="var(--series-1)" opacity="0.11"/>
+    <line x1="${padL}" y1="${baseY}" x2="${W - padR}" y2="${baseY}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 4" opacity="0.7"/>
+    <path d="${lineFor("benchmark_equity")}" fill="none" stroke="var(--muted)" stroke-width="1.6" stroke-dasharray="5 4" opacity="0.85"/>
+    <path d="${lineFor("bull_equity")}" fill="none" stroke="var(--good)" stroke-width="1.7" stroke-dasharray="3 3" opacity="0.9"/>
+    <path d="${lineFor("crash_equity")}" fill="none" stroke="var(--bad)" stroke-width="1.9" opacity="0.88"/>
+    <path d="${lineFor("central_equity")}" fill="none" stroke="var(--series-1)" stroke-width="2.6" stroke-linejoin="round"/>
+    <line id="pr-cross" x1="0" y1="${padT}" x2="0" y2="${H - padB}" stroke="var(--muted)" stroke-width="1" visibility="hidden"/>
+    <circle id="pr-dot" r="4.5" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" visibility="hidden"/>
+  </svg>`;
+
+  const svg = wrap.querySelector("svg");
+  function onMove(clientX) {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return;
+    const fx = ((clientX - rect.left) / rect.width) * W;
+    const i = Math.round(Math.min(points.length - 1, Math.max(0, ((fx - padL) / (W - padL - padR)) * (points.length - 1))));
+    const p = points[i];
+    if (!p) return;
+    const cross = svg.querySelector("#pr-cross"), dot = svg.querySelector("#pr-dot");
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(p.central_equity)); dot.setAttribute("visibility", "visible");
+    tip.style.display = "block";
+    tip.innerHTML = `<b>${frDate(p.date)} (J+${p.day_index})</b><br>Central : ${money(p.central_equity)}<br>Haussier : ${money(p.bull_equity)}<br>Krach : ${money(p.crash_equity)}<br>Marché : ${money(p.benchmark_equity)}`;
+    const px = (x(i) / W) * rect.width;
+    tip.style.left = Math.min(px + 12, Math.max(8, rect.width - 190)) + "px";
+    tip.style.top = "6px";
+  }
+  function onLeave() {
+    tip.style.display = "none";
+    const cross = svg.querySelector("#pr-cross"), dot = svg.querySelector("#pr-dot");
+    if (cross) cross.setAttribute("visibility", "hidden");
+    if (dot) dot.setAttribute("visibility", "hidden");
+  }
+  svg.addEventListener("mousemove", ev => onMove(ev.clientX));
+  svg.addEventListener("mouseleave", onLeave);
+  svg.addEventListener("touchstart", ev => {
+    if (ev.touches && ev.touches.length > 0) onMove(ev.touches[0].clientX);
+  }, { passive: true });
+}
+
+$("#btn-predict")?.addEventListener("click", async () => {
+  setLoading("btn-predict", true, "Calcul…");
+  $("#pred-result").innerHTML = "";
+  msg("pred-msg", "Croisement des actualités LLM, des krachs passés et des 4 stratégies…", "info");
+  const symbols = ($("#pred-symbols").value || "").split(",").map(s => s.trim()).filter(Boolean);
+  try {
+    const { job } = await api("/api/predict", {
+      strategy: $("#pred-strategy").value,
+      horizon_days: parseInt($("#pred-horizon").value, 10) || 63,
+      symbols
+    });
+    const r = await pollJob(job.id, () => msg("pred-msg", "Simulation des trajectoires futures…", "info"));
+    renderPrediction(r);
+    msg("pred-msg", "Prédiction prête (purement consultative).", "ok");
+  } catch (e) {
+    msg("pred-msg", e.message, "err");
+  } finally {
+    setLoading("btn-predict", false);
+  }
+});
 
 /* ---------------- Pilotage ---------------- */
 $("#btn-automation").addEventListener("click", async () => {
