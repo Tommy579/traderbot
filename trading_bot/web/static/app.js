@@ -1161,31 +1161,46 @@ $("#btn-refresh").addEventListener("click", () => {
 
 /* ---------------- Thème Clair / Sombre ---------------- */
 const themeBtn = $("#toggle-theme");
+const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
 function applyTheme(theme) {
   const root = document.documentElement;
   if (theme === "dark" || theme === "light") {
-    root.dataset.theme = theme;
+    root.setAttribute("data-theme", theme);
   } else {
-    delete root.dataset.theme;
+    root.removeAttribute("data-theme");
   }
   if (themeBtn) {
-    const isDark = theme === "dark" || (!theme && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+    const isDark = theme === "dark" || (!theme && mediaQuery.matches);
     themeBtn.textContent = isDark ? "☀" : "☾";
-    themeBtn.title = isDark ? "Passer en thème clair" : "Passer en thème sombre";
+    themeBtn.title = theme ? (isDark ? "Passer au thème clair" : "Passer au thème sombre") : "Thème automatique (appareil)";
   }
 }
+
 try {
   applyTheme(localStorage.getItem("tb-theme"));
 } catch (_) {
   applyTheme(null);
 }
+
+mediaQuery.addEventListener("change", () => {
+  if (!localStorage.getItem("tb-theme")) {
+    applyTheme(null);
+  }
+});
+
 themeBtn?.addEventListener("click", () => {
-  const root = document.documentElement;
-  const sysDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-  const current = root.dataset.theme || (sysDark ? "dark" : "light");
-  const next = current === "dark" ? "light" : "dark";
-  try { localStorage.setItem("tb-theme", next); } catch (_) {}
+  const current = localStorage.getItem("tb-theme");
+  let next = null;
+  if (!current) next = "light";
+  else if (current === "light") next = "dark";
+  else next = null;
+
+  if (next) localStorage.setItem("tb-theme", next);
+  else localStorage.removeItem("tb-theme");
+  
   applyTheme(next);
+  if (!next) toast("Thème automatique activé");
 });
 
 let pollTimer = null;

@@ -1171,8 +1171,10 @@ class TradingBot:
                             shield_decision.reason,
                         )
 
-        # Cash Sweep en fin de cycle : réinvestissement du cash excédentaire vers les safe havens
-        if self._settings.safe_haven_enabled and not account.halted:
+        # Cash Sweep en fin de cycle : réinvestissement du cash excédentaire
+        # vers les safe havens (désactivé sur Bouclier+Épée, qui a déjà son
+        # propre Bouclier sans risque).
+        if self._settings.safe_haven_enabled and not account.halted and sword is None:
             atrs = {
                 sym: sig.indicators.get("atr", 0.0)
                 for sym, sig in signals.items()
@@ -1445,9 +1447,10 @@ class TradingBot:
                 decision.reason,
             )
             return False
-        if intent.side is Side.SELL and not self._cancel_open_orders(intent.symbol, report):
+        if not self._cancel_open_orders(intent.symbol, report):
             # Une jambe de stop ouverte chez le courtier pourrait vendre à
-            # découvert : attendre une annulation confirmée avant la liquidation.
+            # découvert (SELL) ou déclencher un rejet wash-trade (BUY) :
+            # attendre une annulation confirmée avant de soumettre l'ordre.
             return False
         try:
             receipt = self._broker.submit(intent, now=now)
@@ -1458,6 +1461,12 @@ class TradingBot:
         except BrokerError as exc:
             report.errors.append(f"{intent.symbol}: {exc}")
             self._logger.error("échec d'exécution %s: %s", intent.symbol, exc)
+            if intent.side is Side.BUY:
+                existing = account.positions.get(intent.symbol)
+                if existing is not None and existing.stop_price is not None:
+                    self._sync_broker_stop(
+                        existing, price=existing.current_price, now=now, report=report
+                    )
             return False
         self._apply_fill(account, intent, filled)
         if intent.side is Side.SELL and not self._cancel_open_orders(intent.symbol, report):

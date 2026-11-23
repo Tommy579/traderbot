@@ -17,10 +17,11 @@ from pydantic import ValidationError
 
 from trading_bot.config import RiskConfig, Settings
 from trading_bot.data.news_sentiment import NewsAssessment
-from trading_bot.execution.alpaca_client import OrderReceipt
+from trading_bot.execution.alpaca_client import BrokerError, OrderReceipt
 from trading_bot.main import TradingBot
 from trading_bot.risk.engine import (
     AccountState,
+    OrderType,
     Position,
     RejectionCode,
     RiskEngine,
@@ -510,3 +511,126 @@ def test_bot_cycle_executes_auto_unwind_to_fund_offensive_buy(tmp_path: Path) ->
     # Et l'ordre d'achat offensif sur NVDA a pu être exécuté grâce au cash libéré
     buys = [o for o in broker.orders if o.side is Side.BUY and o.symbol == "NVDA"]
     assert len(buys) >= 1
+
+
+def test_bot_cancels_open_stop_before_cash_sweep_buy_to_avoid_wash_trade(
+    tmp_path: Path,
+) -> None:
+    """Un BUY (ex: cash_sweep) sur une position protégée annule d'abord le stop ouvert."""
+
+    class WashTradeGuardBroker(FakeBroker):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.open_stops: dict[str, int] = {"BRK.B": 1}
+
+        def cancel_open_orders(self, symbol: str) -> int:
+            return self.open_stops.pop(symbol, 0)
+
+        def submit(self, intent: Any, now: datetime | None = None) -> OrderReceipt:
+            if intent.side is Side.BUY and self.open_stops.get(intent.symbol, 0) > 0:
+                raise BrokerError("potential wash trade detected")
+            if intent.order_type is OrderType.STOP:
+                self.open_stops[intent.symbol] = self.open_stops.get(intent.symbol, 0) + 1
+            return super().submit(intent, now=now)
+
+    settings = Settings(
+        _env_file=None,
+        symbols=["NVDA"],
+        safe_haven_symbols=["BRK.B"],
+        safe_haven_enabled=True,
+        cash_buffer_pct=0.10,
+        max_safe_haven_total_pct=0.50,
+        state_dir=tmp_path / "state",
+        timeframe="1Hour",
+    )
+    bars = _make_bars([100.0] * 30)
+    pos_brk = Position(
+        symbol="BRK.B",
+        qty=10.0,
+        avg_entry_price=100.0,
+        current_price=100.0,
+        stop_price=95.0,
+    )
+    broker = WashTradeGuardBroker(
+        equity=100_000.0,
+        cash=20_000.0,
+        buying_power=20_000.0,
+        positions={"BRK.B": pos_brk},
+    )
+    bot = TradingBot(
+        settings,
+        ConstantSignalStrategy(SignalType.HOLD),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+    )
+    report = bot.run_once()
+    assert not report.skipped
+    assert report.errors == []
+
+    sweep_buys = [
+        o for o in broker.orders if o.side is Side.BUY and o.reason == "cash_sweep"
+    ]
+    assert len(sweep_buys) == 1
+    assert sweep_buys[0].symbol == "BRK.B"
+    # Le stop de protection a bien été replacé après le fill
+    assert broker.open_stops.get("BRK.B") == 1
+
+
+def test_bot_restores_stop_if_buy_fails_after_cancelling_open_stop(
+    tmp_path: Path,
+) -> None:
+    """Si un BUY échoue après l'annulation du stop, le stop existant est replacé."""
+
+    class FailingBuyBroker(FakeBroker):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.open_stops: dict[str, int] = {"BRK.B": 1}
+
+        def cancel_open_orders(self, symbol: str) -> int:
+            return self.open_stops.pop(symbol, 0)
+
+        def submit(self, intent: Any, now: datetime | None = None) -> OrderReceipt:
+            if intent.side is Side.BUY:
+                raise BrokerError("rejet simulé")
+            if intent.order_type is OrderType.STOP:
+                self.open_stops[intent.symbol] = self.open_stops.get(intent.symbol, 0) + 1
+            return super().submit(intent, now=now)
+
+    settings = Settings(
+        _env_file=None,
+        symbols=["NVDA"],
+        safe_haven_symbols=["BRK.B"],
+        safe_haven_enabled=True,
+        cash_buffer_pct=0.10,
+        max_safe_haven_total_pct=0.50,
+        state_dir=tmp_path / "state",
+        timeframe="1Hour",
+    )
+    bars = _make_bars([100.0] * 30)
+    pos_brk = Position(
+        symbol="BRK.B",
+        qty=10.0,
+        avg_entry_price=100.0,
+        current_price=100.0,
+        stop_price=95.0,
+    )
+    broker = FailingBuyBroker(
+        equity=100_000.0,
+        cash=20_000.0,
+        buying_power=20_000.0,
+        positions={"BRK.B": pos_brk},
+    )
+    bot = TradingBot(
+        settings,
+        ConstantSignalStrategy(SignalType.HOLD),
+        broker,  # type: ignore[arg-type]
+        bars=FakeBars(bars),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+    )
+    report = bot.run_once()
+    assert any("rejet simulé" in err for err in report.errors)
+    # Le stop de la position existante a été restauré malgré l'échec du BUY
+    assert broker.open_stops.get("BRK.B") == 1
+    stop_orders = [o for o in broker.orders if o.order_type is OrderType.STOP]
+    assert len(stop_orders) == 1

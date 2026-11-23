@@ -203,6 +203,19 @@ class YFinanceProvider:
                 actions=False,
                 raise_errors=False,
             )
+            # Alpaca note les classes d'actions avec un point (BRK.B), tandis
+            # que Yahoo Finance attend un tiret (BRK-B). Repli uniquement si la
+            # requête directe n'a rien renvoyé (préserve les suffixes boursiers
+            # comme MC.PA).
+            if (raw is None or raw.empty) and "." in symbol:
+                raw = yf.Ticker(symbol.replace(".", "-")).history(
+                    start=start,
+                    end=end,
+                    interval=interval,
+                    auto_adjust=self._auto_adjust,
+                    actions=False,
+                    raise_errors=False,
+                )
         except Exception as exc:  # yfinance lève des types variés
             raise DataError(f"{symbol}: échec du téléchargement yfinance") from exc
 

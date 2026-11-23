@@ -1031,3 +1031,38 @@ def test_status_exposes_last_cycle(settings, web_bars) -> None:
         assert payload["last_cycle"]["equity"] == pytest.approx(102_500.0)
     finally:
         httpd.shutdown()
+
+
+def test_run_backtest_loads_shield_symbol(
+    settings, monkeypatch, bars_factory
+) -> None:
+    """Le backtest web charge le Bouclier configuré pour shield_sword."""
+    import trading_bot.web.app as webapp
+
+    fetched: list[str] = []
+    series = {
+        "AAA": bars_factory([100.0 * 1.001**i for i in range(260)]),
+        "SPY": bars_factory([200.0 * 0.999**i for i in range(260)]),
+        "SGOV": bars_factory([100.0 * 1.0002**i for i in range(260)], spread=0.02),
+    }
+
+    def fake_fetch(symbol, start, end, interval="1d"):
+        fetched.append(symbol)
+        return series[symbol]
+
+    monkeypatch.setattr(
+        webapp, "CachedProvider", lambda provider, cache_dir, **kw: provider
+    )
+    monkeypatch.setattr(
+        webapp,
+        "YFinanceProvider",
+        lambda: type("P", (), {"fetch": staticmethod(fake_fetch)})(),
+    )
+
+    result = webapp._run_backtest(
+        settings, "shield_sword", ["AAA"], "2023-01-01", "2023-12-31"
+    )
+
+    assert "SGOV" in fetched
+    assert "SGOV" in result["symbols"]
+    assert result["metrics"]["open_positions_at_end"] >= 1

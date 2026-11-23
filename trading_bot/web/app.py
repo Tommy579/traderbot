@@ -64,9 +64,9 @@ from trading_bot.data.loader import (
 from trading_bot.execution.alpaca_client import AlpacaPaperClient, BrokerError
 from trading_bot.history import HistoryStore
 from trading_bot.main import _withdrawal_payload, apply_equity_rebase, news_effect_label
-from trading_bot.risk.engine import RiskEngine
+from trading_bot.risk.engine import AccountState, Position, RiskEngine
 from trading_bot.state import AuditLog, StateStore
-from trading_bot.strategies.base import StrategyError
+from trading_bot.strategies.base import SignalType, StrategyError
 from trading_bot.web.jobs import JobManager
 from trading_bot.withdrawal import WithdrawalService
 
@@ -464,6 +464,22 @@ def _run_backtest(
         symbol: provider.fetch(symbol, fetch_start_dt, end_dt, interval)
         for symbol in symbols
     }
+    # Charge les actifs défensifs (Bouclier et poche de repli) pour que le
+    # backtest finance les mêmes poches que le cycle live. Un actif inexistant
+    # sur la fenêtre (ex. SGOV avant mai 2020) est ignoré sans bloquer le test.
+    ancillary: list[str] = []
+    shield_symbol = getattr(getattr(strategy, "params", None), "shield_symbol", None)
+    if isinstance(shield_symbol, str) and shield_symbol:
+        ancillary.append(shield_symbol)
+    elif settings.safe_haven_enabled:
+        ancillary.extend(settings.safe_haven_symbols)
+    for extra in dict.fromkeys(ancillary):
+        if extra in data or extra == settings.benchmark_symbol:
+            continue
+        try:
+            data[extra] = provider.fetch(extra, fetch_start_dt, end_dt, interval)
+        except DataError:
+            continue
     # Le nom du benchmark vient de la configuration, pas du code de la
     # stratégie : backtest et live doivent utiliser la même référence.
     benchmark_symbol = (

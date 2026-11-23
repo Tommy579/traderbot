@@ -34,6 +34,7 @@ from trading_bot.config import BacktestConfig, RiskConfig
 from trading_bot.data.loader import (
     BarFrame,
     DataError,
+    compute_atr,
     momentum_zscores,
 )
 from trading_bot.risk.engine import (
@@ -337,6 +338,46 @@ class _Simulation:
         is_shield_asset = self.is_shield_sword and (
             symbol == self.shield_symbol or symbol in self.risk.config.safe_haven_symbols
         )
+        # Auto-unwind de la poche de repli avant une entrée offensive si le
+        # cash libre ne suffit pas (même logique que le cycle live dans bot.py).
+        if (
+            not is_shield_asset
+            and self.risk.config.safe_haven_enabled
+            and not self.risk.bear_market
+            and self.account.equity > 0.0
+        ):
+            if self.is_shield_sword:
+                target_notional = self.account.equity * self.sword_target_weight
+            else:
+                stop_distance = atr * self.risk.config.atr_stop_multiple
+                risk_budget = self.account.equity * self.risk.config.risk_per_trade_pct
+                qty_by_risk = risk_budget / stop_distance if stop_distance > 0 else 0.0
+                gross_rem = max(
+                    0.0,
+                    self.account.equity * self.risk.effective_gross_cap_pct()
+                    - self.account.gross_exposure,
+                )
+                notional_cap = min(
+                    self.account.equity * self.risk.effective_position_cap_pct(),
+                    gross_rem,
+                )
+                target_notional = min(qty_by_risk * decision_price, notional_cap)
+            cash_buffer = self.account.equity * self.risk.config.cash_buffer_pct
+            usable_cash = max(
+                0.0, min(self.account.cash - cash_buffer, self.account.buying_power)
+            )
+            if target_notional > usable_cash:
+                needed = target_notional - usable_cash
+                for unwind_dec in self.risk.evaluate_safe_haven_unwind(
+                    self.account, needed, self.marks, now=timestamp.to_pydatetime()
+                ):
+                    if unwind_dec.intent is None:
+                        continue
+                    unwind_price = self.marks.get(unwind_dec.intent.symbol, 0.0)
+                    if unwind_price > 0.0:
+                        self._execute_sell(unwind_dec, timestamp, unwind_price)
+                self._recompute_equity()
+
         if self.is_shield_sword:
             decision = self.risk.evaluate_entry(
                 symbol=symbol,
@@ -544,6 +585,11 @@ class _Simulation:
             position.qty -= qty
             meta.qty -= qty
             meta.entry_fee -= entry_fee_share
+            if intent.reason == "partial_take_profit":
+                position.partial_tp_taken = True
+                position.stop_price = max(
+                    position.stop_price or 0.0, position.avg_entry_price
+                )
 
     def _portfolio_actions(self, timestamp: pd.Timestamp, session_date: date) -> None:
         """Gestion de portefeuille de fin de barre, identique au cycle live.
@@ -594,15 +640,17 @@ class _Simulation:
                 if allocation is not None:
                     self._execute_buy(allocation, timestamp, price)
 
-        # 4. Cash sweep vers la poche de repli.
-        for decision in self.risk.evaluate_cash_sweep(
-            self.account, self.marks, now=now, atrs=self.atrs
-        ):
-            if decision.intent is None:
-                continue
-            price = self.marks.get(decision.intent.symbol, 0.0)
-            if price > 0.0:
-                self._execute_buy(decision, timestamp, price)
+        # 4. Cash sweep vers la poche de repli (désactivé sur Bouclier+Épée,
+        # qui dispose déjà de son propre Bouclier sans risque).
+        if not self.is_shield_sword:
+            for decision in self.risk.evaluate_cash_sweep(
+                self.account, self.marks, now=now, atrs=self.atrs
+            ):
+                if decision.intent is None:
+                    continue
+                price = self.marks.get(decision.intent.symbol, 0.0)
+                if price > 0.0:
+                    self._execute_buy(decision, timestamp, price)
 
         self._recompute_equity()
 
@@ -677,6 +725,15 @@ class BacktestRunner:
         if hasattr(self._strategy, "set_universe"):
             self._strategy.set_universe(data)
         symbols = sorted(data)
+        is_shield_sword = getattr(self._strategy, "name", "") == "shield_sword"
+        params = getattr(self._strategy, "params", None)
+        shield_symbol = str(getattr(params, "shield_symbol", self._risk_config.shield_symbol))
+        defensive_only: set[str] = set()
+        if is_shield_sword and shield_symbol:
+            defensive_only.add(shield_symbol)
+        if self._risk_config.safe_haven_enabled:
+            defensive_only.update(self._risk_config.safe_haven_symbols)
+
         prepared: dict[str, BarFrame] = {}
         for symbol in symbols:
             bars = data[symbol]
@@ -684,10 +741,23 @@ class BacktestRunner:
                 raise BacktestError(f"{symbol}: données vides")
             if not isinstance(bars.index, pd.DatetimeIndex) or bars.index.tz is None:
                 raise BacktestError(f"{symbol}: index UTC requis")
-            try:
-                enriched = self._strategy.generate_signals(bars, symbol=symbol)
-            except (StrategyError, DataError) as exc:
-                raise BacktestError(f"{symbol}: {exc}") from exc
+            if symbol in defensive_only:
+                # Les actifs défensifs (Bouclier, poche de repli) ne reçoivent
+                # pas de signaux offensifs BUY/SELL et peuvent démarrer en cours
+                # de fenêtre (ex. SGOV créé en mai 2020 sur un backtest 2000+).
+                enriched = bars.copy()
+                try:
+                    enriched["atr"] = compute_atr(enriched, length=14)
+                except DataError:
+                    enriched["atr"] = np.nan
+                enriched["signal"] = pd.Series(
+                    SignalType.HOLD, index=enriched.index, dtype=object
+                )
+            else:
+                try:
+                    enriched = self._strategy.generate_signals(bars, symbol=symbol)
+                except (StrategyError, DataError) as exc:
+                    raise BacktestError(f"{symbol}: {exc}") from exc
             prepared[symbol] = self._execution_frame(enriched)
 
         index = pd.DatetimeIndex(
@@ -713,10 +783,8 @@ class BacktestRunner:
             sim_index = index
 
         risk = RiskEngine(self._risk_config)
-        is_shield_sword = getattr(self._strategy, "name", "") == "shield_sword"
         # Les poids et le Bouclier viennent de la stratégie (donc du .env via
         # build_strategy) : le backtest ne recode pas les défauts.
-        params = getattr(self._strategy, "params", None)
         simulation = _Simulation(
             config=self._config,
             risk=risk,
@@ -726,7 +794,7 @@ class BacktestRunner:
                 buying_power=self._config.initial_equity,
             ),
             is_shield_sword=is_shield_sword,
-            shield_symbol=str(getattr(params, "shield_symbol", "SGOV")),
+            shield_symbol=shield_symbol,
             shield_allocation_pct=float(getattr(params, "shield_allocation_pct", 0.70)),
             sword_target_weight=float(getattr(params, "sword_allocation_pct", 0.30))
             / max(1, int(getattr(params, "sword_top_n", 3))),

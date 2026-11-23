@@ -561,6 +561,28 @@ def cmd_backtest(args: argparse.Namespace) -> int:
             data[symbol].index[-1].date(),
         )
 
+    ancillary: list[str] = []
+    shield_symbol = getattr(getattr(strategy, "params", None), "shield_symbol", None)
+    if isinstance(shield_symbol, str) and shield_symbol:
+        ancillary.append(shield_symbol)
+    elif settings.safe_haven_enabled:
+        ancillary.extend(settings.safe_haven_symbols)
+    for extra in dict.fromkeys(ancillary):
+        if extra in data or extra == settings.benchmark_symbol:
+            continue
+        try:
+            data[extra] = provider.fetch(extra, fetch_start, end, interval=args.interval)
+        except DataError as exc:
+            logger.warning("actif défensif %s ignoré en backtest: %s", extra, exc)
+            continue
+        logger.info(
+            "%s (défensif): %d barres (%s → %s)",
+            extra,
+            len(data[extra]),
+            data[extra].index[0].date(),
+            data[extra].index[-1].date(),
+        )
+
     # Le benchmark n'est PAS ajouté à ``data`` : le moteur ne doit pas le
     # trader. Il pilote le régime de marché (SMA longue) et sert de référence
     # de force relative aux stratégies qui en demandent un.

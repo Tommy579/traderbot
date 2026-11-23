@@ -398,7 +398,7 @@ class BuySymbolOnce(Strategy):
 
 
 def test_backtest_applies_partial_take_profit(bars_factory) -> None:
-    """La prise de profit partielle du live existe aussi dans le backtest."""
+    """La prise de profit partielle ne se déclenche qu'une fois par position."""
     closes = [100.0] * 8 + [100.0 * 1.04**i for i in range(1, 30)]
     bars = bars_factory(closes, spread=0.2)
     risk = RiskConfig(
@@ -414,7 +414,12 @@ def test_backtest_applies_partial_take_profit(bars_factory) -> None:
 
     result = runner.run({"AAPL": bars})
 
-    assert "partial_take_profit" in {trade.exit_reason for trade in result.trades}
+    tp_trades = [t for t in result.trades if t.exit_reason == "partial_take_profit"]
+    assert len(tp_trades) == 1
+    # La seconde moitié de la position reste ouverte jusqu'à la fin.
+    assert result.final_positions.get("AAPL", 0.0) == pytest.approx(
+        tp_trades[0].qty, rel=0.05
+    )
 
 
 def test_backtest_applies_overweight_trim(bars_factory) -> None:
@@ -509,3 +514,64 @@ def test_shield_topup_keeps_the_existing_sleeve(bars_factory) -> None:
     # 70 % de 100 000 ≈ 70 000 investis, à ~92-100 $ l'action
     assert result.final_positions["SGOV"] > 400.0
     assert result.metrics["final_equity"] > 90_000.0
+
+
+def test_backtest_unwinds_safe_haven_to_fund_offensive_entry(bars_factory) -> None:
+    """Une entrée offensive vend une part de la poche de repli si le cash manque."""
+    flat = bars_factory([100.0] * 40, spread=0.1)
+    bench = bars_factory([100.0 + 0.5 * i for i in range(260)], spread=0.1)
+    # Index aligné sur les 40 dernières barres du benchmark haussier.
+    aapl = flat.copy()
+    aapl.index = bench.index[-40:]
+    shv = flat.copy()
+    shv.index = bench.index[-40:]
+
+    risk = RiskConfig(
+        safe_haven_enabled=True,
+        safe_haven_symbols=["SHV"],
+        cash_buffer_pct=0.10,
+        max_safe_haven_total_pct=0.85,
+        max_position_pct=0.20,
+        bull_max_position_pct=0.30,
+        max_gross_exposure_pct=0.90,
+        bull_gross_exposure_pct=0.95,
+    )
+    runner = BacktestRunner(
+        BuyOnceStrategy(buy_index=10, atr=1.0),
+        config=BacktestConfig(initial_equity=100_000.0),
+        risk_config=risk,
+    )
+
+    result = runner.run({"AAPL": aapl, "SHV": shv}, benchmark=bench, start_date=aapl.index[0])
+
+    assert result.final_positions.get("AAPL", 0.0) > 0.0
+    assert "safe_haven_unwind" in {t.exit_reason for t in result.trades}
+
+
+def test_backtest_accepts_short_shield_history_below_warmup(bars_factory) -> None:
+    """Un Bouclier créé en cours de fenêtre (ex. SGOV) ne casse pas le backtest."""
+    from trading_bot.strategies.shield_sword import ShieldSwordParams, ShieldSwordStrategy
+
+    falling = bars_factory([200.0 * 0.999**i for i in range(260)], spread=0.05)
+    aapl = bars_factory([100.0 * 1.001**i for i in range(260)], spread=0.05)
+    # SGOV n'existe que sur les 30 dernières séances (< warmup_bars = 201).
+    sgov_short = bars_factory([100.0] * 30, spread=0.02)
+    sgov_short.index = falling.index[-30:]
+
+    strategy = ShieldSwordStrategy(
+        ShieldSwordParams(shield_symbol="SGOV", shield_symbols=("SGOV",)),
+        benchmark=falling,
+    )
+    runner = BacktestRunner(
+        strategy,
+        config=BacktestConfig(initial_equity=100_000.0),
+        risk_config=RiskConfig(shield_symbol="SGOV", safe_haven_enabled=False),
+    )
+
+    result = runner.run(
+        {"AAPL": aapl, "SGOV": sgov_short},
+        benchmark=falling,
+        start_date=falling.index[210],
+    )
+
+    assert result.final_positions.get("SGOV", 0.0) > 400.0

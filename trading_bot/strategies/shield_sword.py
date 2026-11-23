@@ -20,7 +20,7 @@ Philosophie :
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import ClassVar, Final
 
 import numpy as np
@@ -122,6 +122,51 @@ class ShieldSwordStrategy(Strategy):
         périodicité retombe sur mensuel.
         """
         return max(1, round(self._params.sword_rebalance_days / _SESSIONS_PER_MONTH))
+
+    def next_rebalance_date(self, current_date: date) -> date:
+        """Calcule la date du prochain rebalancement (premier jour ouvré du mois cible)."""
+        year, month = current_date.year, current_date.month
+
+        def first_bday_of_month(y: int, m: int) -> date:
+            cand = date(y, m, 1)
+            if cand.weekday() == 5:
+                return date(y, m, 3)
+            if cand.weekday() == 6:
+                return date(y, m, 2)
+            return cand
+
+        period = self.rebalance_period_months
+        current_month_index = year * 12 + month
+        if current_month_index % period == 0:
+            first_bday = first_bday_of_month(year, month)
+            if first_bday > current_date:
+                return first_bday
+
+        while True:
+            month += 1
+            if month > 12:
+                year += 1
+                month = 1
+            month_index = year * 12 + month
+            if month_index % period == 0:
+                return first_bday_of_month(year, month)
+
+    def days_to_next_rebalance(
+        self, as_of: date | datetime | pd.Timestamp
+    ) -> tuple[int, int]:
+        """Retourne (jours_calendaires, séances_ouvrées) d'ici le prochain rebalancement."""
+        if isinstance(as_of, (datetime, pd.Timestamp)):
+            cur_date = as_of.date()
+        else:
+            cur_date = as_of
+        target = self.next_rebalance_date(cur_date)
+        cal_days = max(0, (target - cur_date).days)
+        b_days = sum(
+            1
+            for i in range(1, cal_days + 1)
+            if (cur_date + timedelta(days=i)).weekday() < 5
+        )
+        return cal_days, b_days
 
     def _rebalance_mask(self, index: pd.DatetimeIndex) -> np.ndarray:
         """Vrai pour le premier jour de bourse d'un mois de rebalancement.
@@ -399,7 +444,18 @@ class ShieldSwordStrategy(Strategy):
                 f"Bouclier+Épée : sortie de {sym} "
                 f"(sorti du Top {top_n} lors du rebalancement mensuel)"
             )
-        return f"Bouclier+Épée : {sym} maintenu (conservation stricte entre rebalancements)"
+        cal_days, b_days = self.days_to_next_rebalance(
+            prepared.index[-1] if not prepared.empty else date.today()
+        )
+        if cal_days == 0:
+            rebal_str = "rebalancement aujourd'hui"
+        elif cal_days == 1:
+            rebal_str = "rebalancement demain"
+        else:
+            rebal_str = f"prochain rebalancement dans {cal_days} jours ({b_days} séances)"
+        return (
+            f"Bouclier+Épée : {sym} maintenu (conservation stricte, {rebal_str})"
+        )
 
     def describe(self) -> dict[str, str]:
         """Description journalisable des paramètres de la stratégie."""

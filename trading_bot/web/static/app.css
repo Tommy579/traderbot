@@ -71,36 +71,10 @@
   --tap: 38px;
 }
 
-:root[data-theme="dark"] {
-  color-scheme: dark;
-
-  --plane: #071012;
-  --surface-1: #0e1b1e;
-  --surface-2: #14272b;
-  --ink: #e4eff1;
-  --ink-2: #a9c0c6;
-  --muted: #8aa8af;
-  --card-border: #1e3338;
-
-  --series-1: #4ed3d8;
-  --series-2: #2a7f86;
-
-  --accent: #fbbf24;
-  --accent-ink: #1a1200;
-
-  --good: #4ade80;
-  --bad: #f87171;
-  --warn-color: #e8b04a;
-
-  --btn: #e4eff1;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow-md: 0 10px 28px -10px rgba(0, 0, 0, 0.55);
-}
-
+/* --- Thème Sombre (Auto ou Forcé) --- */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-
     --plane: #071012;
     --surface-1: #0e1b1e;
     --surface-2: #14272b;
@@ -108,21 +82,60 @@
     --ink-2: #a9c0c6;
     --muted: #8aa8af;
     --card-border: #1e3338;
-
     --series-1: #4ed3d8;
     --series-2: #2a7f86;
-
     --accent: #fbbf24;
     --accent-ink: #1a1200;
-
     --good: #4ade80;
     --bad: #f87171;
     --warn-color: #e8b04a;
-
     --btn: #e4eff1;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
     --shadow-md: 0 10px 28px -10px rgba(0, 0, 0, 0.55);
   }
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #071012;
+  --surface-1: #0e1b1e;
+  --surface-2: #14272b;
+  --ink: #e4eff1;
+  --ink-2: #a9c0c6;
+  --muted: #8aa8af;
+  --card-border: #1e3338;
+  --series-1: #4ed3d8;
+  --series-2: #2a7f86;
+  --accent: #fbbf24;
+  --accent-ink: #1a1200;
+  --good: #4ade80;
+  --bad: #f87171;
+  --warn-color: #e8b04a;
+  --btn: #e4eff1;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 10px 28px -10px rgba(0, 0, 0, 0.55);
+}
+
+/* --- Thème Clair (Forcé) --- */
+[data-theme="light"] {
+  color-scheme: light;
+  --plane: #f2f6f7;
+  --surface-1: #ffffff;
+  --surface-2: #e7eef0;
+  --ink: #0b1a1e;
+  --ink-2: #3d5359;
+  --muted: #4f6e78;
+  --card-border: #d7e2e6;
+  --series-1: #0e7490;
+  --series-2: #7fc3ce;
+  --accent: #f59e0b;
+  --accent-ink: #241802;
+  --good: #0f7a42;
+  --bad: #c2321f;
+  --warn-color: #b45309;
+  --btn: #0b1a1e;
+  --shadow-sm: 0 1px 2px rgba(11, 26, 30, 0.05), 0 1px 1px rgba(11, 26, 30, 0.03);
+  --shadow-md: 0 8px 20px -8px rgba(11, 26, 30, 0.18), 0 2px 6px -2px rgba(11, 26, 30, 0.08);
 }
 
 * {
@@ -258,7 +271,7 @@ nav button {
   min-height: 32px;
   padding: 5px 12px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 999px;
   background: transparent;
   color: var(--ink-2);
   font-size: var(--fs-sm);
