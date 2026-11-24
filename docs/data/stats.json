@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-23T20:56:01.279747+00:00",
+ "updated_at": "2026-11-24T16:00:19.665504+00:00",
  "entries": [
   {
    "received_at": "2026-11-02T08:09:00.648728+00:00",
@@ -1065,6 +1065,108 @@
     "orders": [],
     "halts": [],
     "errors": []
+   }
+  },
+  {
+   "received_at": "2026-11-24T16:00:19.665419+00:00",
+   "event": "cycle_trading",
+   "report": {
+    "timestamp": "2026-11-24T16:00:08.000046+00:00",
+    "session_date": "2026-11-24",
+    "mode": "watch_only",
+    "skipped": false,
+    "skip_reason": null,
+    "equity": 94929.04854020578,
+    "cash": 21531.3860942058,
+    "positions_count": 6,
+    "unrealized_pnl": -2571.463550473998,
+    "positions": [
+     {
+      "symbol": "BRK.B",
+      "qty": 14.5542,
+      "avg_entry_price": 564.29536,
+      "current_price": 578.505,
+      "stop_price": 548.81,
+      "market_value": 8419.677470999999,
+      "unrealized_pnl": 206.80994248800053
+     },
+     {
+      "symbol": "COST",
+      "qty": 17.1112,
+      "avg_entry_price": 1092.35,
+      "current_price": 1093.11,
+      "stop_price": 1053.24,
+      "market_value": 18704.423831999997,
+      "unrealized_pnl": 13.004511999999844
+     },
+     {
+      "symbol": "KO",
+      "qty": 28.7509,
+      "avg_entry_price": 96.847563,
+      "current_price": 97.755,
+      "stop_price": 93.33,
+      "market_value": 2810.5442295,
+      "unrealized_pnl": 26.08963044330005
+     },
+     {
+      "symbol": "LLY",
+      "qty": 11.529,
+      "avg_entry_price": 1407.75,
+      "current_price": 1406.57,
+      "stop_price": 1322.68,
+      "market_value": 16216.345529999999,
+      "unrealized_pnl": -13.604220000000733
+     },
+     {
+      "symbol": "WMT",
+      "qty": 51.9459,
+      "avg_entry_price": 125.596767,
+      "current_price": 132.265,
+      "stop_price": 122.55,
+      "market_value": 6870.624463499999,
+      "unrealized_pnl": 346.3873645946993
+     },
+     {
+      "symbol": "XOM",
+      "qty": 128.946,
+      "avg_entry_price": 182.45,
+      "current_price": 158.02,
+      "stop_price": 155.62,
+      "market_value": 20376.04692,
+      "unrealized_pnl": -3150.150779999997
+     }
+    ],
+    "signals": {},
+    "decisions": [
+     {
+      "id": "ff89ccc83ebe0ccddd476fc7",
+      "approved": true,
+      "code": "APPROVED",
+      "reason": "stop_loss",
+      "symbol": "AMD",
+      "side": "sell",
+      "qty": 6.6559,
+      "stop_price": null
+     }
+    ],
+    "orders": [
+     {
+      "order_id": "deb70946-6dc4-4e3b-8519-17b6f93fdb35",
+      "client_order_id": "tbff89ccc83ebe0ccddd476fc7",
+      "symbol": "AMD",
+      "side": "sell",
+      "qty": 6.6559,
+      "status": "pending_new",
+      "filled_qty": 0.0,
+      "avg_fill_price": null
+     }
+    ],
+    "halts": [],
+    "errors": [
+     "AMD: annulation des ordres ouverts impossible: annulation de l'ordre ouvert deb70946-6dc4-4e3b-8519-17b6f93fdb35 (AMD) impossible"
+    ],
+    "dynamic_added": [],
+    "dynamic_removed": []
    }
   }
  ]
