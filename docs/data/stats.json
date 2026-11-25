@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-24T20:56:43.248822+00:00",
+ "updated_at": "2026-11-25T20:57:28.299979+00:00",
  "entries": [
   {
    "received_at": "2026-11-02T08:09:00.648728+00:00",
@@ -1345,6 +1345,91 @@
      "BRK.B: annulation des ordres ouverts impossible: annulation de l'ordre ouvert 912e6772-e7d7-4d26-a78d-90fc617a8158 (BRK.B) impossible",
      "WMT: annulation des ordres ouverts impossible: annulation de l'ordre ouvert 6e5401f4-3cc1-47d5-a65c-fb6272a7fb83 (WMT) impossible"
     ],
+    "dynamic_added": [],
+    "dynamic_removed": []
+   }
+  },
+  {
+   "received_at": "2026-11-25T20:57:28.299880+00:00",
+   "event": "cycle_trading",
+   "report": {
+    "timestamp": "2026-11-25T20:55:41.000053+00:00",
+    "session_date": "2026-11-25",
+    "mode": "full",
+    "skipped": false,
+    "skip_reason": null,
+    "equity": 94944.08054,
+    "cash": 18964.31,
+    "positions_count": 5,
+    "unrealized_pnl": 570.9998770008035,
+    "positions": [
+     {
+      "symbol": "BRK.B",
+      "qty": 27.8229,
+      "avg_entry_price": 570.316032,
+      "current_price": 580.7,
+      "stop_price": 558.3,
+      "market_value": 16156.75803,
+      "unrealized_pnl": 288.91210326720267
+     },
+     {
+      "symbol": "COST",
+      "qty": 17.1112,
+      "avg_entry_price": 1092.35,
+      "current_price": 1090.5,
+      "stop_price": 1053.24,
+      "market_value": 18659.7636,
+      "unrealized_pnl": -31.655719999998443
+     },
+     {
+      "symbol": "KO",
+      "qty": 107.1168,
+      "avg_entry_price": 97.4712,
+      "current_price": 98.005,
+      "stop_price": 94.16,
+      "market_value": 10497.981984,
+      "unrealized_pnl": 57.178947839999935
+     },
+     {
+      "symbol": "LLY",
+      "qty": 11.529,
+      "avg_entry_price": 1407.75,
+      "current_price": 1399.09,
+      "stop_price": 1322.68,
+      "market_value": 16130.10861,
+      "unrealized_pnl": -99.84114000000095
+     },
+     {
+      "symbol": "WMT",
+      "qty": 109.8776,
+      "avg_entry_price": 129.041339,
+      "current_price": 132.285,
+      "stop_price": 126.2,
+      "market_value": 14535.158316,
+      "unrealized_pnl": 356.4056858936003
+     }
+    ],
+    "signals": {
+     "AMD": "HOLD",
+     "AMZN": "HOLD",
+     "AVGO": "HOLD",
+     "BRK.B": "HOLD",
+     "COST": "HOLD",
+     "JPM": "HOLD",
+     "KO": "HOLD",
+     "LLY": "HOLD",
+     "META": "HOLD",
+     "MSFT": "HOLD",
+     "NEE": "HOLD",
+     "NVDA": "HOLD",
+     "PLTR": "HOLD",
+     "WMT": "HOLD",
+     "XOM": "HOLD"
+    },
+    "decisions": [],
+    "orders": [],
+    "halts": [],
+    "errors": [],
     "dynamic_added": [],
     "dynamic_removed": []
    }
